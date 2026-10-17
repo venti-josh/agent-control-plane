@@ -77,7 +77,7 @@ Configuration and task data survive reinstall. Use the release installer for upd
 Pin a release by using its URL instead of `latest`:
 
 ```sh
-curl -fsSL https://github.com/venti-josh/agent-control-plane/releases/download/v0.1.1/install.sh | sh
+curl -fsSL https://github.com/venti-josh/agent-control-plane/releases/download/v0.1.2/install.sh | sh
 ```
 
 To uninstall, run `acp stop`, then `uv tool uninstall acp`. If the installer supplied
@@ -145,8 +145,7 @@ The UI supports drag-and-drop, a keyboard-accessible lane selector, comments, an
 
 ## Run tasks in the Codex app
 
-This feature is available from source and has not yet been released. The public
-v0.1.1 installer still uses CLI execution and ACP-managed worktrees.
+Available in v0.1.2 and later. Earlier releases use CLI execution and ACP-managed worktrees.
 
 Install and sign in to Codex, then open ACP **Settings → Codex app → Copy setup
 prompt**. Paste that prompt into Codex once. The agent creates a dedicated ACP

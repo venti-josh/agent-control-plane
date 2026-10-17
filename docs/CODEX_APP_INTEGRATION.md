@@ -2,7 +2,7 @@
 
 Verified locally on 2026-10-17 with `codex-cli 0.162.0-alpha.17.2` and the
 running ChatGPT desktop app's Codex surface. The probes below led to the local implementation described in README.
-The GitHub v0.1.1 release does not yet include this feature.
+This integration is included in v0.1.2; v0.1.1 uses CLI execution.
 
 ## What worked
 
@@ -91,8 +91,8 @@ start within 120 seconds (or the configured run limit if shorter).
 
 The candidate was installed locally from its wheel and connected to the real board
 on port 8765. Existing configuration bytes, tasks, session IDs, comments, runs, and
-artifacts were preserved. This is an unpublished local build; the public GitHub
-installer still downloads v0.1.1 without this feature until a new release is made.
+artifacts were preserved. That verification used a local build before v0.1.2 publication.
+See VERIFICATION.md for the subsequent public release and upgrade checks.
 
 
 ## Agent-owned workspaces
