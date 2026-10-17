@@ -325,13 +325,13 @@ acp move TASK_ID todo
 acp move TASK_ID waiting_on_input --comment "Which API version should we target?"
 acp answer TASK_ID "Use v2."
 acp changes TASK_ID "Cover the error case in the test suite."
-acp comment TASK_ID "Extra context, without starting a run."
+acp comment TASK_ID "Extra context for the agent."
 acp cancel TASK_ID
 acp reset-session TASK_ID
 acp events --follow
 ```
 
-Ordinary comments **do not** trigger execution. `answer` replies to the current blocker and queues a run. `changes` does the same for a task in Ready for Review. Edits, progress updates, integration echoes, and approval events never wake an agent on their own.
+Any new human comment on a task in Waiting on Input queues a follow-up for the agent to evaluate, whether it comes from the board, CLI, API, or Linear. No reply target or `/resume` command is required. Delayed Linear comments posted before the current blocking question are retained as context without waking the agent. The task moves to In Progress when the agent starts. Multiple comments waiting for the agent are combined into one queued run. `answer` remains a shortcut for replying to the blocker; `changes` queues a run for Ready for Review. Edits, agent progress updates, bot comments, integration echoes, and approval events never wake an agent on their own. Ordinary comments in other lanes do not start work.
 
 The same operations are available through `TaskService` functions and HTTP. Main routes:
 
@@ -342,7 +342,7 @@ The same operations are available through `TaskService` functions and HTTP. Main
 | `GET /api/activity` | Current observed agent counts and time-weighted concurrency averages. |
 | `PATCH /api/tasks/{id}` | Edit context/provider/repository, subject to active-run checks. |
 | `POST /api/tasks/{id}/transition` | Validate and commit a state change. |
-| `POST /api/tasks/{id}/comments` | Comment; optionally reply to a blocker and resume. |
+| `POST /api/tasks/{id}/comments` | Comment; new human comments automatically resume waiting tasks. |
 | `PATCH` / `DELETE /api/tasks/{id}/comments/{comment_id}` | Comment edits/deletion also emit events. |
 | `POST /api/tasks/{id}/request-input` | Atomically save the question and enter Waiting. |
 | `POST /api/tasks/{id}/submit-for-review` | Save output/summary and enter Review. |
@@ -424,7 +424,7 @@ Within a labeled issue, use:
 /changes Add coverage for the expired-token case.
 ```
 
-A human threaded reply to the current blocking question also resumes the task.
+Any new human comment on a waiting issue resumes the task, including top-level comments and replies in other threads.
 `/resume` applies while Waiting; `/changes` applies while Ready for Review.
 A silent drag into Waiting is rejected and corrected because ACP requires an
 explicit blocking question. Move an issue to Done only after reviewing its output.
@@ -468,8 +468,8 @@ the same operations. The task-scoped MCP tools remain limited to their own task.
 ACP posts updates for each issue in one Linear comment thread. The first update
 starts the thread; later updates reply to its root, including after a restart or
 delivery retry. Existing issues reuse their earliest available ACP thread without
-moving older comments. When ACP asks for input in that thread, a human reply there
-resumes the task; replies in unrelated threads do not.
+moving older comments. While a task is waiting for input, any new human comment
+on the issue queues a follow-up for evaluation.
 
 App-managed Linear settings are stored atomically with mode `0600` in
 `ACP_DATA_DIR/linear.json` (by default `~/.local/share/acp/data/linear.json`). They

@@ -272,11 +272,14 @@ class TaskService:
             self._check_run(db, task, run_id)
             if resume and run_id:
                 raise DomainError("Agent comments cannot resume themselves", 422)
-            if resume and (task["state"] != "waiting_on_input" or in_reply_to != task["blocker_comment_id"]):
-                raise DomainError("A resume must reply to the current blocker")
+            if resume and task["state"] != "waiting_on_input":
+                raise DomainError("Only a waiting task can be resumed")
+            wake = not run_id and task["state"] == "waiting_on_input"
+            if wake and not in_reply_to:
+                in_reply_to = task["blocker_comment_id"]
             comment = self._comment(db, task_id, body, "agent" if run_id else "you",
                                     "agent" if run_id else "api", in_reply_to)
-            if resume:
+            if wake:
                 self._schedule(db, task_id, "input", {"comment_id": comment["id"]})
             return comment
 

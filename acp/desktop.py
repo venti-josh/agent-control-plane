@@ -150,7 +150,11 @@ class DesktopBridge:
             '50 MiB total per comment). Include only intended evidence, never credentials '
             'or unrelated files. Plain paths, relative links, and chat-only attachments '
             'are not uploaded. Report actual verification and missing evidence honestly. '
-            'After input or review, end your turn for the user to respond.\n')
+            'After input or review, end your turn for the user to respond.\n'
+            'When a pull request is the intended deliverable, commit and push the changes to the '
+            'repository remote, create or update the PR, and report its canonical URL with '
+            '`review --text "result and verification" --output-url PR_URL --kind pr`. A local commit or a plan to open a PR '
+            'does not complete that outcome. Follow repository instructions and normal app approvals.\n')
         return {'task_id': task['id'], 'repo_path': task['repo_path'],
                 'prompt': build_prompt(task, run, connector), 'title': f"ACP: {task['title']}"}
 

@@ -154,7 +154,6 @@ class Integrations:
         match = mirrored.get(comment_id)
         if match:
             remote_id = match['id']
-            parent_id = (match.get('parent') or {}).get('id')
         if not remote_id:
             remote_ids = {c['id'] for c in remote_comments}
             for local in task['comments']:
@@ -171,8 +170,7 @@ class Integrations:
                                        "{success comment{id}}}", {"input": create_input})
             remote_id = result["commentCreate"]["comment"]["id"]
         with self.store.transaction() as db:
-            db.execute("UPDATE comments SET external_id=?,linear_parent_id=? WHERE id=?",
-                       (f"linear:{remote_id}", parent_id, comment_id))
+            db.execute("UPDATE comments SET external_id=? WHERE id=?", (f"linear:{remote_id}", comment_id))
 
     async def upload_comment_files(self, comment_id, body):
         urls = {}
@@ -371,18 +369,12 @@ class Integrations:
         external_id = f"linear:{data.get('id')}"
         with self.store.transaction() as db:
             task = self.service._task(db, local["id"])
-            # Retain thread membership for both webhook deliveries and polling, including mirror echoes.
-            if 'parentId' in data:
-                db.execute("UPDATE comments SET linear_parent_id=? WHERE external_id=? AND task_id=?",
-                           (data['parentId'], external_id, task['id']))
             mirror = MIRROR.search(data.get("body") or "")
             if mirror:
                 existing = db.execute("SELECT id FROM comments WHERE id=? AND task_id=?",
                                       (mirror[1], task["id"])).fetchone()
                 if existing:
                     db.execute("UPDATE comments SET external_id=? WHERE id=?", (external_id, mirror[1]))
-                    if 'parentId' in data:
-                        db.execute("UPDATE comments SET linear_parent_id=? WHERE id=?", (data['parentId'], mirror[1]))
                     return
             existing = row(db.execute("SELECT * FROM comments WHERE external_id=?", (external_id,)).fetchone())
             if action == "remove":
@@ -405,11 +397,21 @@ class Integrations:
                 return  # Edits never wake an agent.
             author = (payload.get("actor") or {}).get("name", "Linear")
             comment = self.service._comment(db, task["id"], body, author, "linear", external_id=external_id)
-            db.execute("UPDATE comments SET linear_parent_id=? WHERE id=?", (data.get('parentId'), comment['id']))
+            if data.get("createdAt"):
+                # Preserve remote ordering when a question and answer arrive in the same poll.
+                comment["created_at"] = timestamp(data["createdAt"])
+                db.execute("UPDATE comments SET created_at=? WHERE id=?", (comment["created_at"], comment["id"]))
             if action != "create" or (payload.get("actor") or {}).get("type", "").lower() != "user":
                 return
             command, _, message = body.partition(" ")
-            if command == "/wait" and message.strip():
+            if task["state"] == "waiting_on_input":
+                blocker = db.execute("SELECT created_at FROM comments WHERE id=?",
+                                     (task["blocker_comment_id"],)).fetchone()
+                if blocker and comment["created_at"] < blocker["created_at"]:
+                    return  # A delayed earlier note is context, not an answer to this question.
+                db.execute("UPDATE comments SET in_reply_to=? WHERE id=?", (task["blocker_comment_id"], comment["id"]))
+                self.service._schedule(db, task["id"], "input", {"comment_id": comment["id"]})
+            elif command == "/wait" and message.strip():
                 try:
                     self.service._move(db, task, "waiting_on_input", "linear", blocker_comment_id=comment["id"])
                 except DomainError as exc:
@@ -417,18 +419,8 @@ class Integrations:
                     self.service._comment(db, task["id"], str(exc), "system", "system")
                 else:
                     Store.enqueue(db, "linear.sync", f"linear-wait:{comment['id']}", {"task_id": task["id"]})
-            elif command == "/resume" and message.strip() and task["state"] == "waiting_on_input":
-                db.execute("UPDATE comments SET in_reply_to=? WHERE id=?", (task["blocker_comment_id"], comment["id"]))
-                self.service._schedule(db, task["id"], "input", {"comment_id": comment["id"]})
             elif command == "/changes" and message.strip() and task["state"] == "ready_for_review":
                 self.service._schedule(db, task["id"], "review", {"comment_id": comment["id"]})
-            elif task["state"] == "waiting_on_input" and data.get("parentId"):
-                parent = db.execute("SELECT external_id,linear_parent_id FROM comments WHERE id=?",
-                                    (task["blocker_comment_id"],)).fetchone()
-                if parent and (parent['external_id'] == f"linear:{data['parentId']}"
-                               or parent['linear_parent_id'] == data['parentId']):
-                    db.execute("UPDATE comments SET in_reply_to=? WHERE id=?", (task["blocker_comment_id"], comment["id"]))
-                    self.service._schedule(db, task["id"], "input", {"comment_id": comment["id"]})
 
     async def github_get(self, path: str, params: dict | None = None) -> dict | list:
         headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}

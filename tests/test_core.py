@@ -136,20 +136,24 @@ def test_explicit_answer_queues_one_followup_and_waits_for_current_exit(service)
     assert service.get_task(task['id'])['state'] == 'in_progress'
 
 
-def test_regular_comment_while_waiting_does_not_resume(service):
+def test_regular_comment_while_waiting_resumes_for_evaluation(service):
     task, run = started(service)
     service.request_input(task['id'], 'Question?', run['id'])
     service.finish_run(run['id'])
-    service.add_comment(task['id'], 'Just a note')
-    assert service.claim_next() is None
+    comment = service.add_comment(task['id'], 'Additional context')
+    followup = service.claim_next()
+    assert followup['inputs'] == [{'trigger': 'input', 'comment_id': comment['id']}]
+    service.mark_started(followup['id'])
+    assert service.get_task(task['id'])['state'] == 'in_progress'
 
 
-def test_reply_to_stale_blocker_rejected(service):
+def test_reply_to_older_comment_still_resumes_waiting_task(service):
     task, run = started(service)
     c = service.add_comment(task['id'], 'Plan', run_id=run['id'])
     service.request_input(task['id'], 'Current question?', run['id'])
-    with pytest.raises(DomainError, match='current blocker'):
-        service.add_comment(task['id'], 'Answer', in_reply_to=c['id'], resume=True)
+    answer = service.add_comment(task['id'], 'More context', in_reply_to=c['id'], resume=True)
+    service.finish_run(run['id'])
+    assert service.claim_next()['inputs'] == [{'trigger': 'input', 'comment_id': answer['id']}]
 
 
 def test_wrong_task_reply_rejected(service):
