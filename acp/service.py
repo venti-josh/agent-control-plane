@@ -331,7 +331,10 @@ class TaskService:
                 file_path = Path(output_url)
                 if output_url.startswith('file://'):
                     from urllib.parse import unquote
-                    file_path = Path(unquote(urlparse(output_url).path))
+                    parsed_file = urlparse(output_url)
+                    if parsed_file.netloc not in {'', 'localhost'}:
+                        raise DomainError('File review URLs must refer to the local host', 422)
+                    file_path = Path(unquote(parsed_file.path))
                 if not file_path.is_absolute():
                     file_path = Path(task['workspace'] or task['repo_path'] or '.') / file_path
                 label = re.sub(r'([\\\[\]])', r'\\\1', file_path.name)

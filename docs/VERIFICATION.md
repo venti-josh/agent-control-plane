@@ -434,3 +434,17 @@ installing the updated package and restarting it remains necessary for normal
 agent reports to use this behavior. Chat-only attachments and old comments are
 not automatically imported. Existing unrelated comment-threading edits were
 preserved in the shared checkout and excluded from the attachment PR.
+
+### PR #2 review follow-up
+
+Rebased onto `7caea6e` from `main`, preserving both the new activity-reporting
+instructions and the attachment instructions in the desktop prompt. Addressed
+all three review findings: ignore hidden inline HTML comments, recognize balanced
+link labels, and reject non-local authorities in file review URLs. Regression
+coverage also preserves literal HTML syntax inside code and screenshots wrapped
+in links.
+
+Final rebased suite: `189 passed` in 36.16 seconds, including 36 evidence tests,
+with the existing Starlette/httpx deprecation warning. Required Ruff checks,
+JavaScript syntax, and diff checks passed. Focused independent review found no
+remaining issues in the fixes. No installed-service upgrade was performed.

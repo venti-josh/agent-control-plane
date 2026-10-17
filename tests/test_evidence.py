@@ -232,3 +232,77 @@ async def test_link_title_is_preserved_separately_from_file_path(linear_service,
     assert 'https://uploads.linear.app/evidence/1' in remote.comments[0]['body']
     assert 'Verification' in remote.comments[0]['body']
     assert str(path) not in remote.comments[0]['body']
+
+
+@pytest.mark.parametrize('hidden', [
+    'Notes <!-- [example](<{path}>) -->',
+    'Notes <!-- metadata\n![example](<{path}>)\n--> end',
+    'Notes <!-- unfinished [example](<{path}>)',
+])
+async def test_inline_html_comments_do_not_upload_files(linear_service, tmp_path, hidden):
+    task, _ = linked_task(linear_service)
+    secret = tmp_path / 'not-evidence.env'
+    secret.write_text('Must remain local')
+    visible = tmp_path / 'report.md'
+    visible.write_text('Public evidence')
+    body = f'[Visible](<{visible}>)\n\n' + hidden.format(path=secret)
+    comment = linear_service.add_comment(task['id'], body)
+    remote = LinearFiles()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote.respond)) as client:
+        await Integrations(linear_service, client).sync_linear_comment(task['id'], comment['id'])
+    assert remote.files == [b'Public evidence']
+    assert remote.comments[0]['body'].endswith(hidden.format(path=secret))
+    assert '[Visible](<https://uploads.linear.app/evidence/1>)' in remote.comments[0]['body']
+
+
+@pytest.mark.parametrize('label', ['Settings [dark mode]', 'Settings [dark [compact] mode]', r'Settings \[dark\]'])
+@pytest.mark.parametrize('image', ['', '!'])
+async def test_balanced_link_labels_upload_and_retain_label(linear_service, tmp_path, label, image):
+    task, _ = linked_task(linear_service)
+    file = tmp_path / 'screen.png'
+    file.write_bytes(b'Image evidence')
+    comment = linear_service.add_comment(task['id'], f'{image}[{label}](<{file}> "Preview")')
+    remote = LinearFiles()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote.respond)) as client:
+        await Integrations(linear_service, client).sync_linear_comment(task['id'], comment['id'])
+    assert remote.files == [b'Image evidence']
+    assert f'{image}[{label}](<https://uploads.linear.app/evidence/1> "Preview")' in remote.comments[0]['body']
+
+
+@pytest.mark.parametrize('host', ['another-host', 'user@localhost', 'localhost:8000'])
+def test_file_review_rejects_nonlocal_authority_atomically(linear_service, tmp_path, host):
+    task, run = linked_task(linear_service)
+    file = tmp_path / 'report.md'
+    file.write_text('Wrong local file')
+    with pytest.raises(DomainError, match='local'):
+        linear_service.submit_for_review(task['id'], 'Report', f'file://{host}{file}', 'file', run['id'])
+    current = linear_service.get_task(task['id'])
+    assert current['state'] == 'in_progress'
+    assert current['artifacts'] == current['comments'] == []
+    assert linear_service.store.all('SELECT * FROM comment_files') == []
+
+
+async def test_literal_comment_opener_in_code_does_not_hide_evidence(linear_service, tmp_path):
+    task, _ = linked_task(linear_service)
+    file = tmp_path / 'report.md'
+    file.write_text('Evidence')
+    body = f'Document the `<!--` syntax.\n\n[Evidence](<{file}>)'
+    comment = linear_service.add_comment(task['id'], body)
+    remote = LinearFiles()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote.respond)) as client:
+        await Integrations(linear_service, client).sync_linear_comment(task['id'], comment['id'])
+    assert remote.files == [b'Evidence']
+    assert 'Document the `<!--` syntax.' in remote.comments[0]['body']
+    assert '[Evidence](<https://uploads.linear.app/evidence/1>)' in remote.comments[0]['body']
+
+
+async def test_linked_screenshot_uploads_image_and_preserves_external_link(linear_service, tmp_path):
+    task, _ = linked_task(linear_service)
+    file = tmp_path / 'screen.png'
+    file.write_bytes(b'Image evidence')
+    comment = linear_service.add_comment(task['id'], f'[![Screenshot](<{file}>)](https://example.com)')
+    remote = LinearFiles()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote.respond)) as client:
+        await Integrations(linear_service, client).sync_linear_comment(task['id'], comment['id'])
+    assert remote.files == [b'Image evidence']
+    assert '[![Screenshot](<https://uploads.linear.app/evidence/1>)](https://example.com)' in remote.comments[0]['body']

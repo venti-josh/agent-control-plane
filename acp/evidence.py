@@ -10,17 +10,22 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from markdown_it import MarkdownIt
+from markdown_it.rules_inline import StateInline
 
 MAX_FILE_BYTES = 20 * 1024 * 1024
 MAX_COMMENT_BYTES = 50 * 1024 * 1024
 # Inline links only. Code examples are deliberately excluded; angle brackets
 # support filenames with spaces and arbitrary parentheses without ambiguity.
-LINKS = re.compile(
-    r'(?<![\\!])!?\[(?:\\.|[^\]\\\n])*\]\([ \t]*(?:<(?P<angle>[^>\n]+)>|'
+LINK_START = re.compile(r'(?<![\\!])!?\[')
+DESTINATION = re.compile(
+    r'\([ \t]*(?:<(?P<angle>[^>\n]+)>|'
     r'(?P<plain>(?:\\.|[^()\n]|\([^()\n]*\))+?))'
     r'''(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?[ \t]*\)'''
 )
-CODE_SPAN = re.compile(r'(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)')
+INLINE_NON_PROSE = re.compile(
+    r'<!--[\s\S]*?(?:-->|$)|'
+    r'(?<!`)(?P<ticks>`+)(?!`)[\s\S]*?(?<!`)(?P=ticks)(?!`)'
+)
 MARKDOWN = MarkdownIt('commonmark')
 
 
@@ -32,11 +37,29 @@ def prose_only(body):
             start, end = token.map
             for index in range(start, end):
                 lines[index] = re.sub(r'[^\n]', ' ', lines[index])
-    return CODE_SPAN.sub(lambda m: re.sub(r'[^\n]', ' ', m[0]), ''.join(lines))
+    # Whichever opens first wins: comments may contain backticks, and code
+    # spans may contain literal comment openers. Preserve offsets in both.
+    return INLINE_NON_PROSE.sub(lambda m: re.sub(r'[^\n]', ' ', m[0]), ''.join(lines))
 
 
 def local_links(body):
-    for match in LINKS.finditer(prose_only(body)):
+    prose = prose_only(body)
+    state = StateInline(prose, MARKDOWN, {}, [])
+    position, destinations = 0, []
+    while opener := LINK_START.search(prose, position):
+        position = opener.end()
+        if any(m.start() <= opener.start() < m.end() for m in destinations):
+            continue
+        label_end = MARKDOWN.helpers.parseLinkLabel(state, opener.end() - 1, True)
+        if label_end < 0:
+            continue
+        match = DESTINATION.match(prose, label_end + 1)
+        if not match:
+            continue
+        destinations.append(match)
+    # Continue into labels to find linked images, but never scan a destination
+    # or title as another link. Rewrite in source order even for nested labels.
+    for match in sorted(destinations, key=lambda m: m.start()):
         group = 'angle' if match['angle'] is not None else 'plain'
         target = match[group]
         value = re.sub(r'\\([\\ ()\[\]])', r'\1', target)
