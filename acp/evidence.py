@@ -111,7 +111,10 @@ def snapshot_files(db, comment_id, body):
         if total > MAX_COMMENT_BYTES:
             raise DomainError('Linked evidence exceeds the 50 MiB comment limit', 422)
         digest = hashlib.sha256(content).hexdigest()
-        mime = mimetypes.guess_type(path.name)[0] or 'application/octet-stream'
+        # Markdown is a first-class evidence format; older Python/OS MIME
+        # registries do not consistently include it.
+        mime = ('text/markdown' if path.suffix.lower() in {'.md', '.markdown'}
+                else mimetypes.guess_type(path.name)[0] or 'application/octet-stream')
         asset_url = old['asset_url'] if old and old['digest'] == digest else None
         snapshots[target] = (comment_id, target, path.name, mime, content, digest, asset_url)
     db.execute('DELETE FROM comment_files WHERE comment_id=?', (comment_id,))

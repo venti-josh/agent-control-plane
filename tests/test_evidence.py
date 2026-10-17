@@ -306,3 +306,26 @@ async def test_linked_screenshot_uploads_image_and_preserves_external_link(linea
         await Integrations(linear_service, client).sync_linear_comment(task['id'], comment['id'])
     assert remote.files == [b'Image evidence']
     assert '[![Screenshot](<https://uploads.linear.app/evidence/1>)](https://example.com)' in remote.comments[0]['body']
+
+
+@pytest.mark.parametrize('suffix,expected_type', [
+    ('.md', 'text/markdown'),
+    ('.markdown', 'text/markdown'),
+    ('.MD', 'text/markdown'),
+    ('.unknown', 'application/octet-stream'),
+])
+async def test_markdown_upload_type_does_not_depend_on_system_registry(
+        linear_service, tmp_path, monkeypatch, suffix, expected_type):
+    import mimetypes
+
+    # Python 3.11 on macOS has no Markdown entry in its default MIME registry.
+    monkeypatch.setattr(mimetypes, 'guess_type', lambda name: (None, None))
+    task, _ = linked_task(linear_service)
+    report = tmp_path / f'report{suffix}'
+    report.write_bytes(b'Report evidence')
+    comment = linear_service.add_comment(task['id'], f'[Report](<{report}>)')
+    remote = LinearFiles()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote.respond)) as client:
+        await Integrations(linear_service, client).sync_linear_comment(task['id'], comment['id'])
+    assert remote.files == [b'Report evidence']
+    assert remote.uploads[0]['contentType'] == expected_type

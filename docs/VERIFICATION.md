@@ -448,3 +448,16 @@ Final rebased suite: `189 passed` in 36.16 seconds, including 36 evidence tests,
 with the existing Starlette/httpx deprecation warning. Required Ruff checks,
 JavaScript syntax, and diff checks passed. Focused independent review found no
 remaining issues in the fixes. No installed-service upgrade was performed.
+
+### Markdown MIME type portability
+
+Both failed macOS/Python 3.11 CI jobs uploaded Markdown as
+`application/octet-stream`: that runtime's default MIME registry has no `.md`
+entry. ACP now supplies `text/markdown` explicitly for `.md` and `.markdown`
+(case-insensitive), preserving system detection and binary fallback for other
+files. Regression tests reproduce a missing system mapping.
+
+Full macOS suites passed on Python 3.11.17 (`193 passed` in 30.86 seconds) and
+Python 3.14.8 (`193 passed` in 36.87 seconds), including 40 evidence tests. Both
+retain the existing Starlette/httpx warning. Ruff, JavaScript syntax, diff checks,
+and focused review passed.
