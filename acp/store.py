@@ -152,6 +152,9 @@ class Store:
                 db.execute('ALTER TABLE tasks ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0')
             if 'linear_watch_since' not in columns:
                 db.execute('ALTER TABLE tasks ADD COLUMN linear_watch_since REAL NOT NULL DEFAULT 0')
+            comment_columns = {r['name'] for r in db.execute('PRAGMA table_info(comments)')}
+            if 'linear_parent_id' not in comment_columns:
+                db.execute('ALTER TABLE comments ADD COLUMN linear_parent_id TEXT')
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

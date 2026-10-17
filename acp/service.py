@@ -105,7 +105,8 @@ class TaskService:
                                           (in_reply_to, task_id)).fetchone():
             raise DomainError("Reply target does not belong to this task", 422)
         cid, now = str(uuid4()), time.time()
-        db.execute("INSERT INTO comments VALUES(?,?,?,?,?,?,?,?,0)",
+        db.execute("INSERT INTO comments(id,task_id,body,author,in_reply_to,external_id,created_at,updated_at,deleted) "
+                   "VALUES(?,?,?,?,?,?,?,?,0)",
                    (cid, task_id, body, author, in_reply_to, external_id, now, now))
         if origin != 'linear' and self.settings.linear_api_key and self._task(db, task_id)['linear_id']:
             snapshot_files(db, cid, body)

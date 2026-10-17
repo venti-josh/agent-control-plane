@@ -465,6 +465,12 @@ setting Todo can start real work. The key identifies the board owner; sync inclu
 only issues assigned to that user. API routes under `/api/integrations/linear` expose
 the same operations. The task-scoped MCP tools remain limited to their own task.
 
+ACP posts updates for each issue in one Linear comment thread. The first update
+starts the thread; later updates reply to its root, including after a restart or
+delivery retry. Existing issues reuse their earliest available ACP thread without
+moving older comments. When ACP asks for input in that thread, a human reply there
+resumes the task; replies in unrelated threads do not.
+
 App-managed Linear settings are stored atomically with mode `0600` in
 `ACP_DATA_DIR/linear.json` (by default `~/.local/share/acp/data/linear.json`). They
 apply immediately and take precedence over legacy `LINEAR_*` values. API keys and
