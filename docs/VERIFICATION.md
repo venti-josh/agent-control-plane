@@ -400,3 +400,64 @@ No PR, push, merge, deployment, or live external integration write was performed
 Authenticated Claude and live Linear/GitHub webhooks remain unverified. Deploy
 and Done are workflow states; automatic deployment, backup, retention, worktree
 cleanup, and future schema migrations are not implemented.
+
+## Linear evidence uploads — October 17, 2026
+
+The source implementation now snapshots explicitly linked local evidence when
+an ACP comment/review is submitted and uploads it before mirroring the comment.
+Markdown documents become downloadable links; image embeds retain their syntax.
+Desktop and MCP instructions tell agents to report evidence through ACP.
+
+- Original shared-checkout suite: `164 passed` in 31.93 seconds, including
+  unrelated pending comment-threading tests.
+- Isolated attachment-only PR branch: `158 passed` in 34.52 seconds, with one
+  existing Starlette/httpx deprecation warning. The suite required localhost and
+  process permissions; the initial sandbox-only run could not exercise
+  daemon/runner tests.
+- Evidence suite: 22 tests covering snapshots, retries after restart, uncertain
+  comment responses, upload failures, edits, missing/oversized/non-regular files,
+  code examples, escaped links, titled links, and inbound Linear comments.
+- Required Ruff checks, JavaScript syntax check, and `git diff --check` passed.
+- Wheel and source distribution built. The wheel contains `acp/evidence.py` and
+  declares the locked CommonMark parser dependency.
+- Independent review found Markdown parsing issues; regressions reproduced them
+  before fixes. The final focused review reported no remaining findings.
+- Live Linear verification uploaded a 418-byte Markdown report and a 68-byte
+  synthetic PNG fixture after deleting the source files. Authenticated downloads
+  matched the snapshots byte-for-byte. A subsequent Linear GraphQL read confirmed
+  both asset URLs in the [ticket comment](https://linear.app/tryprincipal/issue/TRY-11/update-instructions-and-functionality-to-upload-attachments#comment-abe3c0c9).
+
+The PNG is an upload fixture, not a product screenshot. Live verification used
+the new source uploader with an isolated database and published through the
+active ACP run. The installed running service was not replaced or restarted;
+installing the updated package and restarting it remains necessary for normal
+agent reports to use this behavior. Chat-only attachments and old comments are
+not automatically imported. Existing unrelated comment-threading edits were
+preserved in the shared checkout and excluded from the attachment PR.
+
+### PR #2 review follow-up
+
+Rebased onto `7caea6e` from `main`, preserving both the new activity-reporting
+instructions and the attachment instructions in the desktop prompt. Addressed
+all three review findings: ignore hidden inline HTML comments, recognize balanced
+link labels, and reject non-local authorities in file review URLs. Regression
+coverage also preserves literal HTML syntax inside code and screenshots wrapped
+in links.
+
+Final rebased suite: `189 passed` in 36.16 seconds, including 36 evidence tests,
+with the existing Starlette/httpx deprecation warning. Required Ruff checks,
+JavaScript syntax, and diff checks passed. Focused independent review found no
+remaining issues in the fixes. No installed-service upgrade was performed.
+
+### Markdown MIME type portability
+
+Both failed macOS/Python 3.11 CI jobs uploaded Markdown as
+`application/octet-stream`: that runtime's default MIME registry has no `.md`
+entry. ACP now supplies `text/markdown` explicitly for `.md` and `.markdown`
+(case-insensitive), preserving system detection and binary fallback for other
+files. Regression tests reproduce a missing system mapping.
+
+Full macOS suites passed on Python 3.11.17 (`193 passed` in 30.86 seconds) and
+Python 3.14.8 (`193 passed` in 36.87 seconds), including 40 evidence tests. Both
+retain the existing Starlette/httpx warning. Ruff, JavaScript syntax, diff checks,
+and focused review passed.

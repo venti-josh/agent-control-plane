@@ -31,7 +31,11 @@ def get_task() -> dict:
 
 @mcp.tool()
 def add_comment(text: str) -> dict:
-    """Record progress or a plan on this task. This never starts another agent."""
+    """Record progress and evidence. Link local files with absolute Markdown paths for Linear upload.
+
+    Screenshots: ![description](</absolute/path.png>); files: [report](</absolute/path.md>).
+    This never starts another agent.
+    """
     return call("/comments", {"body": text})
 
 
@@ -43,7 +47,11 @@ def request_input(question: str) -> dict:
 
 @mcp.tool()
 def submit_for_review(summary: str, output_url: str = "", kind: str = "text") -> dict:
-    """Submit tested work and move to Ready for Review. kind: text, pr, file, or url. Then stop work."""
+    """Submit tested work and evidence; move to Ready for Review, then stop work.
+
+    kind: text, pr, file, or url. Use kind=file for a local output_url. Include other
+    evidence as absolute Markdown links/images in summary so Linear can receive it.
+    """
     return call("/submit-for-review", {"summary": summary, "output_url": output_url, "kind": kind})
 
 

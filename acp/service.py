@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from .config import PROVIDERS, STATES, Settings
+from .evidence import snapshot_files
 from .store import Store, encode, row
 
 TRANSITIONS = {
@@ -95,7 +96,7 @@ class TaskService:
 
     def _comment(self, db: sqlite3.Connection, task_id: str, body: str, author: str,
                  origin: str, in_reply_to: str | None = None, external_id: str | None = None) -> dict:
-        body = required(body, "Comment")
+        required(body, "Comment")  # Preserve Markdown indentation (notably code examples).
         if external_id:
             existing = row(db.execute("SELECT * FROM comments WHERE external_id=?", (external_id,)).fetchone())
             if existing:
@@ -106,6 +107,8 @@ class TaskService:
         cid, now = str(uuid4()), time.time()
         db.execute("INSERT INTO comments VALUES(?,?,?,?,?,?,?,?,0)",
                    (cid, task_id, body, author, in_reply_to, external_id, now, now))
+        if origin != 'linear' and self.settings.linear_api_key and self._task(db, task_id)['linear_id']:
+            snapshot_files(db, cid, body)
         self._event(db, "comment.created", task_id,
                     {"comment_id": cid, "body": body, "author": author, "in_reply_to": in_reply_to}, origin)
         return dict(db.execute("SELECT * FROM comments WHERE id=?", (cid,)).fetchone())
@@ -157,7 +160,8 @@ class TaskService:
                     raise DomainError("The blocking question must be a nonempty comment on this task", 422)
                 blocker = blocker_comment_id
             else:
-                blocker = self._comment(db, task["id"], required(comment or "", "Question"),
+                required(comment or "", "Question")
+                blocker = self._comment(db, task["id"], comment,
                                         "agent" if run_id else "system" if origin == "system" else "you", origin)["id"]
         elif comment:
             self._comment(db, task["id"], comment, "you" if origin != "agent" else "agent", origin)
@@ -285,7 +289,9 @@ class TaskService:
             if delete and task["state"] == "waiting_on_input" and task["blocker_comment_id"] == comment_id:
                 raise DomainError("The current blocker cannot be deleted while the task is waiting")
             if not delete:
-                body = required(body or "", "Comment")
+                required(body or "", "Comment")
+                if self.settings.linear_api_key and task['linear_id']:
+                    snapshot_files(db, comment_id, body)
             db.execute("UPDATE comments SET body=?,deleted=?,updated_at=? WHERE id=?",
                        (body if body is not None else comment["body"], int(delete), time.time(), comment_id))
             self._event(db, "comment.deleted" if delete else "comment.updated", task_id,
@@ -299,7 +305,7 @@ class TaskService:
 
     def submit_for_review(self, task_id: str, summary: str, output_url: str = "", kind: str = "text",
                           run_id: str | None = None) -> dict:
-        summary = required(summary, "Summary")
+        required(summary, "Summary")
         if kind not in {"text", "pr", "file", "url"}:
             raise DomainError("Output kind must be text, pr, file, or url", 422)
         if kind != "text":
@@ -320,7 +326,20 @@ class TaskService:
                        (aid, task_id, kind, artifact_url, summary, time.time()))
             self._event(db, "artifact.submitted", task_id, {"kind": kind, "url": artifact_url, "summary": summary},
                         "agent" if run_id else "api")
-            self._comment(db, task_id, summary + (f"\n\n{output_url}" if output_url else ""),
+            output_link = output_url
+            if kind == 'file' and output_url and urlparse(output_url).scheme not in {'http', 'https'}:
+                file_path = Path(output_url)
+                if output_url.startswith('file://'):
+                    from urllib.parse import unquote
+                    parsed_file = urlparse(output_url)
+                    if parsed_file.netloc not in {'', 'localhost'}:
+                        raise DomainError('File review URLs must refer to the local host', 422)
+                    file_path = Path(unquote(parsed_file.path))
+                if not file_path.is_absolute():
+                    file_path = Path(task['workspace'] or task['repo_path'] or '.') / file_path
+                label = re.sub(r'([\\\[\]])', r'\\\1', file_path.name)
+                output_link = f'[{label}](<{file_path.absolute().as_uri()}>)'
+            self._comment(db, task_id, summary + (f"\n\n{output_link}" if output_link else ""),
                           "agent" if run_id else "you", "agent" if run_id else "api")
             return self._move(db, task, "ready_for_review", "agent" if run_id else "api", run_id=run_id)
 

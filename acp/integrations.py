@@ -11,6 +11,7 @@ from uuid import uuid4
 import httpx
 
 from .config import PROVIDERS
+from .evidence import replace_links
 from .service import DomainError, TaskService, parse_pr, required
 from .store import Store, encode, row
 
@@ -127,7 +128,8 @@ class Integrations:
             if remote_id:
                 await self.linear("mutation($id:String!){commentDelete(id:$id){success}}", {"id": remote_id})
             return
-        body = f"<!-- acp:{comment_id} -->\n**{comment['author']}**\n\n{comment['body']}"
+        evidence_body = await self.upload_comment_files(comment_id, comment['body'])
+        body = f"<!-- acp:{comment_id} -->\n**{comment['author']}**\n\n{evidence_body}"
         if remote_id:
             await self.linear("mutation($id:String!,$input:CommentUpdateInput!){commentUpdate(id:$id,input:$input)"
                               "{success}}", {"id": remote_id, "input": {"body": body}})
@@ -152,6 +154,30 @@ class Integrations:
             remote_id = result["commentCreate"]["comment"]["id"]
         with self.store.transaction() as db:
             db.execute("UPDATE comments SET external_id=? WHERE id=?", (f"linear:{remote_id}", comment_id))
+
+    async def upload_comment_files(self, comment_id, body):
+        urls = {}
+        for file in self.store.all('SELECT * FROM comment_files WHERE comment_id=? ORDER BY rowid',
+                                   (comment_id,)):
+            asset_url = file['asset_url']
+            if not asset_url:
+                data = await self.linear(
+                    'mutation($contentType:String!,$filename:String!,$size:Int!){'
+                    'fileUpload(contentType:$contentType,filename:$filename,size:$size)'
+                    '{success uploadFile{uploadUrl assetUrl headers{key value}}}}',
+                    {'contentType': file['content_type'], 'filename': file['filename'],
+                     'size': len(file['content'])})
+                upload = data['fileUpload']['uploadFile']
+                headers = {'Content-Type': file['content_type'], 'Cache-Control': 'public, max-age=31536000'}
+                headers.update({h['key']: h['value'] for h in upload['headers']})
+                response = await self.client.put(upload['uploadUrl'], headers=headers, content=file['content'])
+                response.raise_for_status()
+                asset_url = upload['assetUrl']
+                with self.store.transaction() as db:
+                    db.execute('UPDATE comment_files SET asset_url=? WHERE comment_id=? AND target=? AND digest=?',
+                               (asset_url, comment_id, file['target'], file['digest']))
+            urls[file['target']] = asset_url
+        return replace_links(body, urls)
 
     @staticmethod
     def labelled(issue):

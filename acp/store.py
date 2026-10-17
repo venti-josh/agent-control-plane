@@ -48,6 +48,16 @@ CREATE TABLE IF NOT EXISTS artifacts (
     created_at REAL NOT NULL,
     UNIQUE(task_id, url)
 );
+CREATE TABLE IF NOT EXISTS comment_files (
+    comment_id TEXT NOT NULL REFERENCES comments(id),
+    target TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    content BLOB NOT NULL,
+    digest TEXT NOT NULL,
+    asset_url TEXT,
+    PRIMARY KEY(comment_id, target)
+);
 CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL REFERENCES tasks(id),
