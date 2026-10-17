@@ -103,11 +103,13 @@ def main() -> None:
     ds.add_parser('disconnect')
     connect = ds.add_parser('connect')
     connect.add_argument('--thread', required=True)
-    for name in ('claim', 'prepare', 'bind', 'started', 'complete', 'acknowledge', 'action'):
+    for name in ('claim', 'prepare', 'bind', 'started', 'complete', 'acknowledge', 'action', 'steering', 'steered'):
         item = ds.add_parser(name)
         item.add_argument('run_id')
-        if name in ('bind', 'started', 'complete', 'acknowledge', 'action'):
+        if name in ('bind', 'started', 'complete', 'acknowledge', 'action', 'steered'):
             item.add_argument('--thread', default=None)
+        if name == 'steered':
+            item.add_argument('--comment-id', required=True)
         if name == 'prepare':
             item.add_argument('--repo', default='')
         if name in {'complete', 'acknowledge'}:
@@ -157,9 +159,11 @@ def main() -> None:
                                  {'thread_id': args.thread if action == 'connect' else None})
             else:
                 payload = {}
-                if action in {'bind', 'started', 'action', 'complete', 'acknowledge'}:
+                if action in {'bind', 'started', 'action', 'complete', 'acknowledge', 'steered'}:
                     payload['thread_id'] = args.thread or (os.getenv('CODEX_THREAD_ID', '')
                                                           if action in {'started', 'action'} else '')
+                if action == 'steered':
+                    payload['comment_id'] = args.comment_id
                 if action == 'prepare':
                     payload['repo'] = args.repo
                 if action in {'complete', 'acknowledge'}:

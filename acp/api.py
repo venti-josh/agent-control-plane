@@ -35,6 +35,7 @@ class DesktopConnection(Model):
 
 
 class DesktopRequest(Model):
+    comment_id: str = ''
     thread_id: str = ''
     repo: str = ''
     action: Literal['get', 'comment', 'input', 'review', 'activity'] = 'get'
@@ -234,6 +235,10 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True,
     async def desktop_run(run_id: str, operation: str, data: DesktopRequest):
         if operation == 'claim':
             return await asyncio.to_thread(desktop.claim, run_id)
+        if operation == 'steering':
+            return desktop.steering(run_id)
+        if operation == 'steered':
+            return desktop.steered(run_id, data.thread_id, data.comment_id)
         if operation == 'prepare':
             return await desktop.prepare(run_id, data.repo)
         if operation in {'bind', 'started'}:

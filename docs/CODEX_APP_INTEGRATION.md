@@ -103,3 +103,39 @@ Claude and Codex CLI start from the selected repository and choose their own
 workspace. Previously saved CLI workspace paths remain usable for existing
 sessions, without branch enforcement. The task prompt supplies context and a
 short reporting contract, without an implementation checklist or Git policy.
+
+
+## Comment steering
+
+New human comments during an attached app run now have their own persisted delivery
+records. The dispatcher checks `desktop steering RUN_ID` before each 10-second
+`wait_threads` wait. A `send` result supplies the exact bound chat, comment ID, and
+prompt for `send_message_to_thread`; after success, the dispatcher calls
+`desktop steered RUN_ID --thread CHAT_ID --comment-id COMMENT_ID`. This uses the
+existing active run. Queue acceptance and message delivery do not mark work complete.
+
+A second claim returns `uncertain`, so recovery requires inspecting that chat for
+the comment ID before confirming delivery. Do not blindly resend. If delivery cannot
+be established, report the failure explicitly; comments remain in task history for a
+human retry. The task cannot submit stale review/input while feedback is pending.
+Cancelled runs cannot claim or acknowledge steering, but can still acknowledge their
+actual completion. Deleted, unclaimed comments are not sent. Comments after an
+agent has paused use the normal retained-session continuation path.
+
+Protocol investigation on 2026-10-17: the supported `codex app-server proxy` command
+was unavailable because its default control socket did not exist. No daemon was
+started and no private IPC was used. Read-only inspection of the installed desktop
+app confirmed that its `send_message_to_thread` handler invokes the follow-up
+message path with steer semantics. This supports the chosen dispatcher design but
+is not a live end-to-end steering test. Unit/integration regressions exercise the
+ACP delivery and lifecycle contracts. Existing dispatchers receive the new loop
+instructions on their next dispatched run after upgrading ACP; an already-running
+dispatcher does not retroactively acquire them.
+
+Validation for this change: full suite **241 passed** (one existing Starlette/httpx
+deprecation warning); Ruff fatal-error checks, all three JavaScript syntax checks,
+and `git diff --check` passed. The 14 new regressions cover local/Linear routing,
+duplicate and bot/edit/mirror filtering, same-chat continuation, CLI fallback,
+deleted comments, wrong-chat acknowledgements, cancellation/human pause, stale
+results, uncertain delivery, and the HTTP endpoints. Independent read-only review
+found no actionable issues and separately ran 30 desktop/steering tests.

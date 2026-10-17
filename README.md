@@ -207,7 +207,7 @@ downloaded successfully.
 | Todo | Atomically queue a run. Remains Todo until a process actually starts. |
 | In Progress | The runner owns this state. The task's own agent plans and implements. |
 | Waiting on Input | A nonempty blocking comment is required in the same database transaction. The agent pauses. |
-| Ready for Review | Output and summary are saved; the agent pauses. Explicit changes-requested feedback queues another run. |
+| Ready for Review | Output and summary are saved; the agent pauses. New human comments or explicit changes-requested feedback queue another run. |
 | Deploy | Deployment handoff. A merged linked PR moves here when the task was awaiting review. |
 | Done | Explicit completion. Nothing is automatically merged, deployed, or marked done. |
 
@@ -229,7 +229,25 @@ acp desktop status
 ```
 
 Keep the Codex app open. Codex tasks then run automatically in app chats, with the
-same chat resumed for answers and requested revisions. The agent manages its working directory and any worktree. The
+same chat resumed for answers and requested revisions. New human comments on
+In Progress tasks steer their existing active app chat automatically. The dispatcher
+checks for comments between 10-second waits and forwards them through the app's
+message tool, without waiting for the task to finish or starting another ACP run.
+Comments on Waiting on Input or Ready for Review tasks queue a continuation in
+the same chat. Todo comments join queued task context. Planning, Deploy, and Done
+comments remain notes; edits, bot comments, and mirrored agent updates do not
+trigger work. CLI providers receive comments in a follow-up after the active process
+finishes; in-flight steering is available for connected Codex app tasks.
+
+Delivery is recorded per comment. An interrupted dispatcher never blindly resends
+an uncertain message: it must inspect the target chat for the comment ID and confirm
+delivery before acknowledging it. New feedback blocks an agent's stale review/input
+submission until delivery is confirmed. Cancellation still revokes the run; it never
+turns an old comment into a new automatic retry. Linear webhooks deliver changes as
+they arrive; polling-only installations discover them on the existing 60-second
+scan. App scheduling and tool latency also affect delivery time.
+
+The agent manages its working directory and any worktree. The
 supported `codex queue` command wakes the dispatcher; the dispatcher uses the app's
 thread tools to create/continue task chats and observe completion. It performs a
 small coordination turn for each run, including follow-ups. A connected dispatcher
@@ -360,7 +378,7 @@ acp reset-session TASK_ID
 acp events --follow
 ```
 
-Any new human comment on a task in Waiting on Input queues a follow-up for the agent to evaluate, whether it comes from the board, CLI, API, or Linear. No reply target or `/resume` command is required. Delayed Linear comments posted before the current blocking question are retained as context without waking the agent. The task moves to In Progress when the agent starts. Multiple comments waiting for the agent are combined into one queued run. `answer` remains a shortcut for replying to the blocker; `changes` queues a run for Ready for Review. Edits, agent progress updates, bot comments, integration echoes, and approval events never wake an agent on their own. Ordinary comments in other lanes do not start work.
+Any new human comment on a task in Waiting on Input queues a follow-up for the agent to evaluate, whether it comes from the board, CLI, API, or Linear. No reply target or `/resume` command is required. Delayed Linear comments posted before the current blocking question are retained as context without waking the agent. The task moves to In Progress when the agent starts. Multiple comments waiting for the agent are combined into one queued run. `answer` remains a shortcut for replying to the blocker; `changes` queues a run for Ready for Review. Edits, agent progress updates, bot comments, integration echoes, and approval events never wake an agent on their own. New human comments on In Progress desktop tasks steer the existing chat; on Ready for Review they queue a continuation. Todo comments join queued context. Planning, Deploy, and Done comments do not start work.
 
 The same operations are available through `TaskService` functions and HTTP. Main routes:
 
@@ -371,7 +389,7 @@ The same operations are available through `TaskService` functions and HTTP. Main
 | `GET /api/activity` | Current observed agent counts and time-weighted concurrency averages. |
 | `PATCH /api/tasks/{id}` | Edit context/provider/repository, subject to active-run checks. |
 | `POST /api/tasks/{id}/transition` | Validate and commit a state change. |
-| `POST /api/tasks/{id}/comments` | Comment; new human comments automatically resume waiting tasks. |
+| `POST /api/tasks/{id}/comments` | Comment; human input steers active app chats or resumes waiting/review tasks. |
 | `PATCH` / `DELETE /api/tasks/{id}/comments/{comment_id}` | Comment edits/deletion also emit events. |
 | `POST /api/tasks/{id}/request-input` | Atomically save the question and enter Waiting. |
 | `POST /api/tasks/{id}/submit-for-review` | Save output/summary and enter Review. |
@@ -453,7 +471,7 @@ Within a labeled issue, use:
 /changes Add coverage for the expired-token case.
 ```
 
-Any new human comment on a waiting issue resumes the task, including top-level comments and replies in other threads.
+Any new human comment on a waiting or review issue resumes the task, including top-level comments and replies in other threads. Comments on an active Codex app task steer its existing chat.
 `/resume` applies while Waiting; `/changes` applies while Ready for Review.
 A silent drag into Waiting is rejected and corrected because ACP requires an
 explicit blocking question. Move an issue to Done only after reviewing its output.

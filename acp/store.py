@@ -123,6 +123,11 @@ CREATE TABLE IF NOT EXISTS desktop_runs (
     phase TEXT NOT NULL CHECK(phase IN ('dispatched','claimed','attached','complete')),
     thread_id TEXT
 );
+CREATE TABLE IF NOT EXISTS desktop_inputs (
+    comment_id TEXT PRIMARY KEY REFERENCES comments(id),
+    run_id TEXT NOT NULL REFERENCES runs(id),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','claimed','delivered'))
+);
 CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 

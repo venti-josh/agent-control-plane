@@ -134,6 +134,24 @@ class TaskService:
         self._event(db, "run.queued", task_id, {"run_id": rid, "trigger": trigger})
         return rid
 
+    def _route_comment(self, db: sqlite3.Connection, task: dict, comment: dict) -> None:
+        """Route only new human input; agent/mirror/edit filtering belongs to callers."""
+        if task['hidden'] or task['state'] not in {'todo', 'in_progress', 'waiting_on_input', 'ready_for_review'}:
+            return
+        if task['state'] == 'in_progress':
+            active = db.execute(
+                "SELECT r.id FROM runs r JOIN desktop_runs d ON d.run_id=r.id "
+                "WHERE r.task_id=? AND r.status='running' AND r.stop_requested=0 "
+                "AND d.phase='attached' AND d.thread_id IS NOT NULL", (task['id'],)).fetchone()
+            if active:
+                db.execute('INSERT OR IGNORE INTO desktop_inputs(comment_id,run_id) VALUES(?,?)',
+                           (comment['id'], active['id']))
+                self._event(db, 'run.input_pending', task['id'],
+                            {'run_id': active['id'], 'comment_id': comment['id']})
+                return
+        trigger = 'input' if task['state'] == 'waiting_on_input' else 'comment'
+        self._schedule(db, task['id'], trigger, {'comment_id': comment['id']})
+
     def _move(self, db: sqlite3.Connection, task: dict, state: str, origin: str,
               *, comment: str | None = None, internal: bool = False,
               run_id: str | None = None, expected_version: int | None = None,
@@ -145,6 +163,12 @@ class TaskService:
         if expected_version is not None and task["version"] != expected_version:
             raise DomainError("Task changed since you opened it. Refresh and try again.")
         self._check_run(db, task, run_id)
+        if run_id and state in {'waiting_on_input', 'ready_for_review'} and db.execute(
+                "SELECT 1 FROM desktop_inputs i JOIN comments c ON c.id=i.comment_id "
+                "WHERE i.run_id=? AND (i.status='claimed' OR (i.status='pending' AND c.deleted=0))",
+                (run_id,)).fetchone():
+            raise DomainError('New comments are awaiting dispatcher delivery. Incorporate them before pausing; '
+                              'retry after the dispatcher confirms delivery.')
         if task["state"] == state:
             return task
         if state not in TRANSITIONS[task["state"]]:
@@ -279,8 +303,8 @@ class TaskService:
                 in_reply_to = task["blocker_comment_id"]
             comment = self._comment(db, task_id, body, "agent" if run_id else "you",
                                     "agent" if run_id else "api", in_reply_to)
-            if wake:
-                self._schedule(db, task_id, "input", {"comment_id": comment["id"]})
+            if not run_id:
+                self._route_comment(db, task, comment)
             return comment
 
     def edit_comment(self, task_id: str, comment_id: str, body: str | None = None, delete: bool = False) -> dict:
