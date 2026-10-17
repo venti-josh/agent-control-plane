@@ -69,19 +69,37 @@ simulated activity in the native panel within five
 seconds. The preview stays open until **Quit Comet**. Only this test
 server exposes mood controls; the normal overlay always follows actual activity.
 
-The tile shows current running ACP agents, observed subagents, input waits, and
-time-weighted average concurrency over the last 30 minutes, 1 hour, and 3 hours.
-Each average divides observed running agent-seconds by the full window, including
-idle time. Queued/unlaunched runs and agents that have submitted input/review are
-excluded. Counters refresh every five seconds while the tile is visible.
+The tile observes **all local Codex chats and subagents**, including chats outside
+ACP, through user-level Codex lifecycle hooks. Install the hook handlers once:
 
-CLI subagents are observed from Codex collaboration and Claude local-agent events.
-Codex app task chats report observed descendant state changes through the bound
-`desktop action RUN_ID activity --text '{"CHILD_ID":"running"}'` action; they must
-also report completion/interruption or a human input wait. App counts depend on
-these cooperative reports. This covers ACP runs, not every chat open in Codex;
-historical subagent activity before tracking was installed cannot be reconstructed.
-No transcript or prompt content is stored in the activity table.
+```sh
+acp activity install
+# In Codex: open /hooks, review and trust the ACP command handlers.
+# Then start a new turn or session.
+acp activity status
+```
+
+Codex requires explicit review of the exact hook commands; ACP never modifies
+hook trust. The installer preserves existing handlers and saves a backup beside
+`~/.codex/hooks.json`. Use `--codex-home PATH` for a custom Codex home. To remove
+only ACP's handlers, run `acp activity uninstall`. Install from the installed tool
+(or a persistent environment), since hooks use its absolute Python path.
+
+Running counts include observed root chats and subagents; waiting counts reflect
+explicit input/approval hooks. Idle, finished, failed, and queued board tasks are
+excluded. Async questions do not pause an agent. Hooks do not provide an approval
+resolution event: a wait can remain observed until the tool returns, even after
+approval. Hosted tools may not emit every lifecycle hook. Activity silent for five
+minutes becomes **unavailable**, rather than presenting potentially stale counts;
+a fresh event restores it. A dead Codex process clears its counts.
+
+Averages divide observed running agent-seconds by the full 30-minute, 1-hour, or
+3-hour window. Earlier activity and already-running chats cannot be reconstructed;
+coverage begins when trusted hooks receive new events. Counters refresh every five
+seconds. Only identifiers, process ownership, lifecycle states/tool names, and
+timestamps are stored in `codex-activity.sqlite3`; no prompts, transcripts, or tool
+outputs are retained. The hook runs locally, makes no network calls, and never
+approves tools or modifies Codex responses. Claude activity is not included.
 
 Comet plays dead below a 30-minute average of 1 (X eyes, limp tail, no motion),
 sighs with drooping ears and tears from 1 to below 2, flies happily from 2 to
@@ -602,7 +620,8 @@ which live integrations were exercised.
 | `store.py` | SQLite schema, event log, durable outbox. |
 | `worker.py` | Run scheduling and retryable event delivery. |
 | `runners.py` | Claude/Codex CLI adapters, sessions, launch directories, logs. |
-| `activity.py` | Persisted observed subagent intervals and agent concurrency summaries. |
+| `codex_activity.py` | Global Codex hook installation and observed activity intervals. |
+| `activity.py` | Legacy ACP-run activity accounting. |
 | `desktop.py` | Supported Codex app queue, dispatch lifecycle, run-scoped actions. |
 | `mcp_server.py` | Four task tools exposed over stdio. |
 | `integrations.py` | Single-workspace Linear sync and GitHub review events. |

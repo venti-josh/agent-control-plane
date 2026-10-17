@@ -18,7 +18,7 @@ TRANSITIONS = {
     "planning": {"todo"},
     "todo": {"planning", "in_progress", "waiting_on_input"},
     "in_progress": {"planning", "todo", "waiting_on_input", "ready_for_review"},
-    "waiting_on_input": {"planning", "todo", "in_progress"},
+    "waiting_on_input": {"planning", "todo", "in_progress", "done"},
     "ready_for_review": {"planning", "todo", "in_progress", "waiting_on_input", "deploy", "done"},
     "deploy": {"planning", "ready_for_review", "waiting_on_input", "done"},
     "done": {"planning", "todo"},

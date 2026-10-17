@@ -1,6 +1,7 @@
 import pytest
 
 from acp.store import Store
+from acp.activity import Activity
 from conftest import started
 
 
@@ -16,7 +17,7 @@ def test_activity_excludes_queued_and_claimed_but_unlaunched_runs(client):
     svc = client.app.state.service
     svc.create_task('Queued', state='todo')
     svc.claim_next()
-    assert client.get('/api/activity').json() == {
+    assert Activity(client.app.state.service.store).summary() == {
         'running': 0, 'subagents': 0, 'waiting_on_input': 0,
         'averages': {'30m': 0, '1h': 0, '3h': 0},
     }
@@ -123,18 +124,18 @@ def test_desktop_reports_are_bound_validated_and_track_waiting_children(client, 
     assert report({'child': 'running'}).status_code == 200
     clock[0] += 900
     assert report({'child': 'waiting_on_input'}).status_code == 200
-    data = client.get('/api/activity').json()
+    data = Activity(client.app.state.service.store).summary()
     assert data['running'] == 1
     assert data['waiting_on_input'] == 1
     assert report({'child': 'bogus'}).status_code == 422
     clock[0] += 900
-    assert client.get('/api/activity').json()['averages']['30m'] == 1.5
+    assert Activity(client.app.state.service.store).summary()['averages']['30m'] == 1.5
     assert report({'child': 'completed'}).status_code == 200
-    assert client.get('/api/activity').json()['waiting_on_input'] == 0
+    assert Activity(client.app.state.service.store).summary()['waiting_on_input'] == 0
     bridge.action(run['id'], thread, 'input', text='Need direction')
     # A parent waiting for a person is no longer doing work, even before acknowledgement.
-    assert client.get('/api/activity').json()['running'] == 0
-    assert client.get('/api/activity').json()['waiting_on_input'] == 1
+    assert Activity(client.app.state.service.store).summary()['running'] == 0
+    assert Activity(client.app.state.service.store).summary()['waiting_on_input'] == 1
     assert report({'late': 'running'}).status_code == 409
     bridge.complete(run['id'], thread)
     assert report({'late': 'running'}).status_code == 409

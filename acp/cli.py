@@ -67,6 +67,9 @@ def main() -> None:
     events.add_argument("--after", type=int, default=0)
     events.add_argument("--follow", action="store_true")
     sub.add_parser("mcp")
+    activity = sub.add_parser('activity', help='Observe Codex agents across local chats using trusted hooks')
+    activity.add_argument('activity_command', choices=['install', 'status', 'uninstall'])
+    activity.add_argument('--codex-home', type=Path, default=Path(os.getenv('CODEX_HOME', str(Path.home()/'.codex'))))
     linear = sub.add_parser('linear', help='Configure Linear from an agent or terminal; JSON output, no secrets')
     linear_sub = linear.add_subparsers(dest='linear_command', required=True)
     linear_sub.add_parser('status')
@@ -121,6 +124,17 @@ def main() -> None:
             print(json.dumps(daemon.setup(), indent=2))
             return
         settings = Settings.from_env()
+        if args.command == 'activity':
+            from .codex_activity import CodexActivity, install_hooks, uninstall_hooks
+            database = settings.data_dir / 'codex-activity.sqlite3'
+            if args.activity_command == 'install':
+                result = install_hooks(args.codex_home, database, sys.executable)
+            elif args.activity_command == 'uninstall':
+                result = uninstall_hooks(args.codex_home, database)
+            else:
+                result = CodexActivity(database).summary()
+            print(json.dumps(result, indent=2))
+            return
         if args.command == 'overlay':
             from . import overlay
             if args.overlay_command == 'start':

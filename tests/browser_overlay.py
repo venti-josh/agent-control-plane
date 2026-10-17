@@ -15,6 +15,7 @@ from playwright.sync_api import expect, sync_playwright
 
 from acp.api import create_app
 from acp.config import Settings
+from acp.codex_activity import CodexActivity, process_info
 
 
 def main():
@@ -23,7 +24,10 @@ def main():
         sock.bind(('127.0.0.1', 0))
         url = f'http://127.0.0.1:{sock.getsockname()[1]}'
         app = create_app(Settings(data_dir=Path(tmp), base_url=url), start_worker=False)
-        service = app.state.service
+        monitor = CodexActivity(Path(tmp)/'codex-activity.sqlite3')
+        owner = f'{os.getpid()}:{process_info(os.getpid())[1]}'
+        def emit(name, session='chat', **fields):
+            monitor.record(dict(hook_event_name=name, session_id=session, turn_id='turn', **fields), owner)
         server = uvicorn.Server(uvicorn.Config(app, log_level='error', ws='none'))
         thread = threading.Thread(target=lambda: server.run(sockets=[sock]), daemon=True)
         thread.start()
@@ -43,6 +47,10 @@ def main():
                 tile = page.locator('#activity-overlay')
                 expect(tile).to_be_visible()
                 assert page.evaluate('getComputedStyle(document.documentElement).backgroundColor') == 'rgba(0, 0, 0, 0)'
+                expect(page.locator('#activity-running')).to_have_text('—')
+                expect(tile).to_have_attribute('data-mood', 'unavailable')
+                emit('SessionStart')
+                page.evaluate('activityOverlay.refresh()')
                 expect(page.locator('#activity-running')).to_have_text('0')
                 expect(tile).to_have_attribute('data-mood', 'dead')
                 bounds = tile.bounding_box()
@@ -57,11 +65,9 @@ def main():
                 assert pet.evaluate('(el) => el.toDataURL()') == dead_frame
                 # Real backend history drives every mood, including exact thresholds.
                 for count, mood in [(1, 'sad'), (2, 'happy'), (3, 'rainbow')]:
-                    service.create_task(f'Agent {count}', state='todo')
-                    run = service.claim_next()
-                    service.mark_started(run['id'])
-                    with service.store.transaction() as db:
-                        db.execute('UPDATE runs SET started_at=? WHERE id=?', (time.time() - 1900, run['id']))
+                    emit('UserPromptSubmit', session=f'agent-{count}')
+                    with monitor.connect() as db:
+                        db.execute('UPDATE intervals SET start=? WHERE agent=?', (time.time() - 1900, f'agent-{count}'))
                     if count != 1:
                         page.evaluate('activityOverlay.refresh()')
                     # First transition proves the automatic five-second refresh works.
@@ -73,10 +79,19 @@ def main():
                     page.screenshot(path=str(screenshot_dir / f'{mood}.png'))
                     expect(page.locator('#activity-running')).to_have_text(str(count))
                 expect(page.locator('#activity-30m')).to_have_text('3.00')
-                task = service.create_task('Need answer', state='todo')
-                service.request_input(task['id'], 'Which option?')
+                emit('PreToolUse', session='waiting', tool_name='request_user_input', tool_use_id='q')
                 page.evaluate('activityOverlay.refresh()')
                 expect(page.locator('#activity-waiting')).to_have_text('1')
+                with monitor.connect() as db:
+                    db.execute('UPDATE agents SET last_seen=?', (time.time()-301,))
+                page.evaluate('activityOverlay.refresh()')
+                expect(page.locator('#activity-running')).to_have_text('—')
+                expect(tile).to_have_attribute('data-mood', 'unavailable')
+                for number in range(1, 4):
+                    emit('PreToolUse', session=f'agent-{number}', tool_name='Bash')
+                emit('PreToolUse', session='waiting', tool_name='request_user_input', tool_use_id='q')
+                page.evaluate('activityOverlay.refresh()')
+                expect(page.locator('#activity-running')).to_have_text('3')
                 # Pointer drag, keyboard move, and persistence across reloads.
                 handle = page.locator('#activity-interact')
                 box = handle.bounding_box()

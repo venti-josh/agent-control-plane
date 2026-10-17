@@ -81,6 +81,18 @@ def main():
                 expect(waiting).to_have_count(1, timeout=10000)
                 expect(review).to_have_count(1, timeout=10000)
                 page.screenshot(path=os.getenv('ACP_SCREENSHOT', str(Path(tmp)/'board.png')), full_page=True)
+                # Close a blocked task through the actual dialog without restarting it.
+                svc = server.config.app.state.service
+                blocked = svc.create_task('Blocked completion')
+                with svc.store.transaction() as db:
+                    svc._move(db, svc._task(db, blocked['id']), 'todo', 'api')
+                    svc._move(db, svc._task(db, blocked['id']), 'waiting_on_input', 'api', comment='No further work needed')
+                page.get_by_role('button', name='Open Blocked completion', exact=True).click()
+                page.locator('#task-state').select_option('done')
+                page.get_by_role('button', name='Move', exact=True).click()
+                expect(page.locator('#resume-task')).to_be_hidden()
+                assert svc.get_task(blocked['id'])['state'] == 'done'
+                page.locator('[data-close="task-dialog"]').click()
                 waiting.click()
                 expect(page.locator('#resume-task')).to_be_visible()
                 page.locator('#comment-body').fill('Acceptance criterion: a plain text report.')
