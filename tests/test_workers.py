@@ -117,3 +117,26 @@ def test_receipt_deduplication_is_atomic(service):
     assert not service.receive('test', 'delivery-1', {}, 'test')['duplicate']
     assert service.receive('test', 'delivery-1', {}, 'test')['duplicate']
     assert len(service.store.all('SELECT * FROM outbox')) == 1
+
+
+async def test_slow_linear_scan_leaves_time_to_drain_outbox(service, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    import acp.worker as module
+    from acp.integrations import Integrations
+    clock = [0]
+    scans, deliveries = [], []
+    service.settings.linear_label_sync = True
+    monkeypatch.setattr(module, 'time', SimpleNamespace(monotonic=lambda:clock[0], time=lambda:1000))
+    async def scan(self):
+        scans.append(clock[0]); clock[0] += 70
+    monkeypatch.setattr(Integrations, 'sync_labelled', scan)
+    worker = module.Worker(service)
+    async def deliver(integration):
+        deliveries.append(True)
+        if len(deliveries)==3: raise asyncio.CancelledError
+        return True
+    monkeypatch.setattr(worker, 'deliver_once', deliver)
+    with pytest.raises(asyncio.CancelledError):
+        await worker.delivery_loop()
+    assert len(scans)==1

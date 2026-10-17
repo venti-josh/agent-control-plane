@@ -77,7 +77,7 @@ Configuration and task data survive reinstall. Use the release installer for upd
 Pin a release by using its URL instead of `latest`:
 
 ```sh
-curl -fsSL https://github.com/venti-josh/agent-control-plane/releases/download/v0.1.0/install.sh | sh
+curl -fsSL https://github.com/venti-josh/agent-control-plane/releases/download/v0.1.1/install.sh | sh
 ```
 
 To uninstall, run `acp stop`, then `uv tool uninstall acp`. If the installer supplied
@@ -266,40 +266,40 @@ Delivery is **at least once**, not exactly once. HTTP failures retry with expone
 
 Deleting a subscription prevents its undelivered jobs from sending. All event history and logs are retained in v0.1; there is no automatic retention cleanup.
 
-## Optional Linear integration
+## Linear setup in the app
 
-One workspace and one selected team are configured at a time. Linear workflow states are mapped through that team's seven distinct state IDs. The SQLite database is the canonical local task state; Linear is a synchronized interface. Only **explicitly imported issues** are tracked—there is no workspace-wide automatic execution.
+Open **Settings → Linear**. Paste a personal API key (or save
+`LINEAR_API_KEY` in `~/.local/share/acp/config.env`), then click **Continue**.
+Choose a team and the agent for labeled issues: Codex, Claude Code, or Demo.
+ACP discovers your account and matches statuses automatically. If statuses are
+missing, their names are shown before you connect. Click **Connect Linear**. ACP creates the
+`acp` label if it does not exist. No restart or hand-written status JSON is needed.
 
-Supply `LINEAR_API_KEY`, `LINEAR_WORKSPACE_ID`, `LINEAR_TEAM_ID`, `LINEAR_WEBHOOK_SECRET`, and the seven-entry `LINEAR_STATES_JSON` in `config.env` (or the explicit source `.env`). `.env.example` includes the exact mapping keys. Use your team's actual workflow state IDs, not names or status types. Configure the states in Linear before importing tasks. Restart after changing configuration.
+The seven lanes need distinct Linear statuses. Status names may differ; choose
+existing statuses under **Customize status mapping**. Once issues are linked, the team and mapping
+are fixed for that board to preserve their meaning. Use a separate `ACP_DATA_DIR`
+for a different workspace/team.
 
-A read-only GraphQL query to look up the workspace, teams, and states:
+**Assign a Linear issue to yourself and add the `acp` label to put it on your ACP board.**
+The board owner is discovered from the API key and shown in the app. A different
+user must use a separate ACP data directory; changing keys cannot silently transfer
+board ownership. Existing
+labeled issues are discovered automatically. Unlabeled issues are ignored.
+Removing the label or assigning the issue to someone else stops queued/active work and hides the card; history, sessions,
+and worktrees remain. Re-adding it restores the same task. Archived issues,
+issues moved outside the selected team, and unmapped statuses (such as Canceled)
+are also removed from the active board. Todo and In Progress queue execution;
+Planning leaves the issue ready for inspection.
 
-```graphql
-query {
-  organization { id name }
-  teams {
-    nodes {
-      id
-      name
-      states { nodes { id name type } }
-    }
-  }
-}
-```
+ACP scans the owner’s labeled issues in the selected team, their statuses, and new comments every
+minute, including after restart. **Sync now** requests an immediate
+scan. This works without a public URL or tunnel. Setup shows the selected team,
+agent, and any sync errors. Only comments created after ACP begins watching the
+issue are eligible to trigger work; edits and bot comments never trigger runs.
+Comment deletion synchronization requires webhooks. Local pending writes take
+precedence over incoming status snapshots.
 
-Use Linear's developer explorer or its GraphQL endpoint with your API key. State names may differ from the lane labels, but each of the seven lanes must map to a different state ID. The API validates the workspace/team of imported issues.
-
-In the board, open **Integrations & events → Import issue**. Provide a specific issue such as `ENG-123`, choose the agent, and supply its repository. Importing Todo queues execution; importing In Progress queues it locally rather than inventing a running process. To import an already-waiting issue, use the API's `question` field so its blocking reason is explicit.
-
-```bash
-curl -sS http://127.0.0.1:8765/api/integrations/linear/import \
-  -H 'Content-Type: application/json' \
-  -d '{"issue_id":"ENG-123","provider":"claude","repo_path":"/path/to/repo"}'
-```
-
-Configure Linear **Issue** and **Comment** webhooks to the signed listener described below. Linked status/title/description changes and comments are synchronized. Local comments carry an invisible correlation marker; echoed integration updates do not start another run.
-
-Within an imported Linear issue:
+Within a labeled issue, use:
 
 ```text
 /wait Which environment should this target?
@@ -307,13 +307,72 @@ Within an imported Linear issue:
 /changes Add coverage for the expired-token case.
 ```
 
-A human threaded reply to the current blocking comment also resumes. Plain comments, comment edits, and integration-authored comments do not trigger runs. `/resume` applies only while Waiting; `/changes` applies only while Ready for Review. An invalid `/wait` command is preserved as a comment with an explanation.
+A human threaded reply to the current blocking question also resumes the task.
+`/resume` applies while Waiting; `/changes` applies while Ready for Review.
+A silent drag into Waiting is rejected and corrected because ACP requires an
+explicit blocking question. Move an issue to Done only after reviewing its output.
 
-Linear cannot be prevented from accepting its own UI's silent drag into Waiting. ACP instead rejects that synchronized change, restores the canonical lane, and asks for `/wait <question>`. Your locally enforced invariant remains intact.
+### Automatic repository selection
 
-**Reconcile linked statuses** fetches current status/context snapshots for imported issues after downtime. It does not backfill missed comments or GitHub reviews. Use provider webhook redelivery or the explicit local answer/change-request command for missed feedback. There is no periodic external polling in v0.1. If local sync work is still pending, local state takes precedence over an incoming snapshot; this is not a general bidirectional merge engine.
+Leave the task's repository blank to let its selected Codex or Claude agent choose
+from local Git checkouts using the issue and replies. ACP searches `~/Documents`,
+`~/Projects`, `~/Developer`, `~/code`, and `~/src` (up to four levels, excluding
+hidden/dependency directories). Set `REPO_SEARCH_ROOTS` to a colon-separated list
+of parent directories to change the search on macOS/Linux. An explicit task
+repository or `DEFAULT_REPO` takes precedence.
 
-To change workspaces, use another `ACP_DATA_DIR` and its matching configuration. Existing data is deliberately not silently reassigned across workspaces.
+The discovery pass receives repository names, paths, and sanitized remote URLs.
+Codex uses a read-only discovery sandbox; Claude has no tools in this pass.
+The selected path must belong to the discovered catalog. Ambiguity asks for input;
+no arbitrary repository is selected. Implementation still happens in the task's
+isolated Git worktree, with the same retained session for revisions.
+
+### Agent and CLI setup
+
+The same setup is available to Codex, Claude, and other local agents as JSON-returning
+commands. Save the key in `config.env`, or provide `--key-file /private/path/key`
+with `discover` and `configure`; do not put keys directly in shell arguments.
+
+```sh
+acp start
+acp linear discover
+acp linear configure --team-id TEAM_ID --create-missing --provider codex
+acp linear status
+acp linear sync
+```
+
+`discover` returns teams, available statuses, suggested mappings, and missing lanes.
+Omit `--create-missing` to require existing statuses. For custom mappings, pass
+`--states-file mapping.json`. Saving activates automatic synchronization of issues
+carrying the `acp` label. An agent should inspect the team before selecting it;
+setting Todo can start real work. The key identifies the board owner; sync includes
+only issues assigned to that user. API routes under `/api/integrations/linear` expose
+the same operations. The task-scoped MCP tools remain limited to their own task.
+
+App-managed Linear settings are stored atomically with mode `0600` in
+`ACP_DATA_DIR/linear.json` (by default `~/.local/share/acp/data/linear.json`). They
+apply immediately and take precedence over legacy `LINEAR_*` values. API keys and
+webhook secrets are never returned by setup/status responses. Existing manual
+environment configurations continue to work; save through the app to enable
+label-based synchronization.
+
+### Optional instant updates
+
+For faster incoming updates, run `acp hooks` and forward **port 8766 only** through
+an HTTPS tunnel. In **Settings → Advanced → Instant updates**, enter
+`https://your-forwarding-host/hooks/linear` and click **Register webhook**. ACP registers Issue and Comment events and
+saves the signing secret automatically. A workspace admin key is required.
+Agents can do the same with:
+
+```sh
+acp linear webhook --url https://your-forwarding-host/hooks/linear
+```
+
+The listener and tunnel must remain running for instant delivery; minute-by-minute
+sync continues without them. A registered webhook is not proof of delivery: the
+app separately displays the last accepted signed delivery. To change tunnel URLs,
+remove the old ACP webhook in Linear, then register the new address. A stable
+forwarding address avoids this step. The board/API port must stay private.
 
 ## Signed incoming webhooks
 

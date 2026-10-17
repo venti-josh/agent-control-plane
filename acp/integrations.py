@@ -15,7 +15,7 @@ from .service import DomainError, TaskService, parse_pr, required
 from .store import Store, encode, row
 
 MIRROR = re.compile(r"<!-- acp:([a-f0-9-]{36}) -->")
-ISSUE_FIELDS = "id identifier url title description updatedAt state { id } team { id }"
+ISSUE_FIELDS = "id identifier url title description updatedAt archivedAt state { id } team { id } assignee { id } labels { nodes { name } }"
 
 
 def timestamp(value: str | None) -> float:
@@ -37,7 +37,7 @@ class Integrations:
         self.service, self.store, self.settings, self.client = service, service.store, service.settings, client
 
     async def linear(self, query: str, variables: dict | None = None) -> dict:
-        if not self.settings.linear_api_key:
+        if not self.settings.linear_enabled:
             raise DomainError("Configure Linear credentials and the state mapping first", 503)
         response = await self.client.post("https://api.linear.app/graphql",
                                           headers={"Authorization": self.settings.linear_api_key},
@@ -52,7 +52,7 @@ class Integrations:
                 raise RuntimeError("Linear mutation was not successful")
         return data
 
-    async def fetch_linear_issue(self, issue_id: str) -> dict:
+    async def fetch_linear_issue(self, issue_id: str, *, allow_other_team=False) -> dict:
         data = await self.linear("query($id:String!){organization{id} issue(id:$id){" + ISSUE_FIELDS + "}}",
                                  {"id": issue_id})
         if data["organization"]["id"] != self.settings.linear_workspace_id:
@@ -60,7 +60,7 @@ class Integrations:
         issue = data.get("issue")
         if not issue:
             raise DomainError("Linear issue not found", 404)
-        if issue["team"]["id"] != self.settings.linear_team_id:
+        if issue["team"]["id"] != self.settings.linear_team_id and not allow_other_team:
             raise DomainError("Issue is outside the configured Linear team", 422)
         return issue
 
@@ -73,6 +73,8 @@ class Integrations:
     async def import_linear(self, issue_id: str, provider: str | None = None,
                             repo_path: str | None = None, question: str | None = None) -> dict:
         issue = await self.fetch_linear_issue(issue_id)
+        if self.settings.linear_label_sync and not self.belongs_on_board(issue):
+            raise DomainError('Assign this issue to the board owner and add the acp label before syncing it.', 422)
         provider = provider or self.settings.default_provider
         if provider not in PROVIDERS:
             raise DomainError("Unknown provider", 422)
@@ -102,7 +104,7 @@ class Integrations:
 
     async def sync_linear_task(self, task_id: str) -> None:
         task = self.service.get_task(task_id)
-        if not task["linear_id"]:
+        if not task["linear_id"] or task['hidden']:
             return
         data = await self.linear(
             "mutation($id:String!,$input:IssueUpdateInput!){issueUpdate(id:$id,input:$input)"
@@ -118,7 +120,7 @@ class Integrations:
     async def sync_linear_comment(self, task_id: str, comment_id: str) -> None:
         task = self.service.get_task(task_id)
         comment = self.store.one("SELECT * FROM comments WHERE id=? AND task_id=?", (comment_id, task_id))
-        if not task["linear_id"] or not comment:
+        if not task["linear_id"] or task['hidden'] or not comment:
             return
         remote_id = (comment["external_id"] or "").removeprefix("linear:")
         if comment["deleted"]:
@@ -151,18 +153,142 @@ class Integrations:
         with self.store.transaction() as db:
             db.execute("UPDATE comments SET external_id=? WHERE id=?", (f"linear:{remote_id}", comment_id))
 
+    @staticmethod
+    def labelled(issue):
+        return not issue.get('archivedAt') and any(label['name'].casefold() == 'acp'
+                                                   for label in issue.get('labels', {}).get('nodes', []))
+
+    def belongs_on_board(self, issue):
+        return (self.labelled(issue) and issue['team']['id'] == self.settings.linear_team_id
+                and (not self.settings.linear_user_id
+                     or (issue.get('assignee') or {}).get('id') == self.settings.linear_user_id))
+
+    def hide_linear(self, task_id):
+        with self.store.transaction() as db:
+            task = self.service._task(db, task_id)
+            if task['hidden']:
+                return
+            db.execute('UPDATE tasks SET hidden=1,version=version+1 WHERE id=?', (task_id,))
+            db.execute("UPDATE runs SET stop_requested=1 WHERE task_id=? AND status='running'", (task_id,))
+            db.execute("UPDATE runs SET status='cancelled',finished_at=? WHERE task_id=? AND status='queued'",
+                       (time.time(), task_id))
+            # Do not replay stale writes if the label is re-added later.
+            db.execute("UPDATE outbox SET status='done' WHERE kind IN ('linear.sync','linear.comment') "
+                       "AND status IN ('pending','failed') AND json_extract(payload,'$.task_id')=?", (task_id,))
+            self.service._event(db, 'task.hidden', task_id, {'reason': 'Issue no longer matches the board owner, team, label or statuses'}, 'linear')
+
+    async def sync_labelled(self):
+        if not self.settings.linear_label_sync or not self.settings.linear_enabled:
+            return {'synced': 0}
+        cursor, ids = None, set()
+        while True:
+            query_filter = 'labels:{some:{name:{eqIgnoreCase:"acp"}}}'
+            if self.settings.linear_user_id:
+                query_filter += ',assignee:{id:{eq:$owner}}'
+            owner_argument = ',$owner:ID!' if self.settings.linear_user_id else ''
+            data = await self.linear('query ACPLabelled($team:String!,$after:String' + owner_argument + '){organization{id} team(id:$team){'
+                                     'issues(first:100,after:$after,filter:{' + query_filter + '})'
+                                     '{nodes{id} pageInfo{hasNextPage endCursor}}}}',
+                                     {'team': self.settings.linear_team_id, 'after': cursor,
+                                      **({'owner': self.settings.linear_user_id} if self.settings.linear_user_id else {})})
+            if data['organization']['id'] != self.settings.linear_workspace_id:
+                raise DomainError('Linear API key belongs to another workspace', 422)
+            connection = data['team']['issues']
+            ids.update(i['id'] for i in connection['nodes'])
+            if not connection['pageInfo']['hasNextPage']:
+                break
+            cursor = connection['pageInfo']['endCursor']
+        ids.update(t['linear_id'] for t in self.store.all('SELECT linear_id FROM tasks WHERE linear_id IS NOT NULL AND hidden=0'))
+        for issue_id in ids:
+            await self.handle_linear({'organizationId': self.settings.linear_workspace_id,
+                                      'type': 'Issue', 'action': 'update', 'data': {'id': issue_id}})
+            task = self.store.one('SELECT id FROM tasks WHERE linear_id=? AND hidden=0', (issue_id,))
+            if task:
+                await self.poll_comments(task['id'])
+        return {'synced': len(ids)}
+
+    async def poll_comments(self, task_id):
+        task = self.service.get_task(task_id)
+        if task['hidden']:
+            return
+        cursor, comments = None, []
+        while True:
+            data = await self.linear('query ACPComments($id:String!,$after:String){issue(id:$id){'
+                                     'comments(first:100,after:$after){nodes{id body createdAt updatedAt '
+                                     'user{name} botActor{__typename} parent{id}} pageInfo{hasNextPage endCursor}}}}',
+                                     {'id': task['linear_id'], 'after': cursor})
+            if not data.get('issue'):
+                return
+            connection = data['issue']['comments']
+            comments.extend(connection['nodes'])
+            if not connection['pageInfo']['hasNextPage']:
+                break
+            cursor = connection['pageInfo']['endCursor']
+        cutoff = max(task['created_at'], task['linear_watch_since'])
+        for comment in sorted(comments, key=lambda c: timestamp(c['createdAt'])):
+            if timestamp(comment['createdAt']) < cutoff:
+                continue
+            # An edited comment first seen after downtime is context, never a new command.
+            # Linear can stamp updatedAt slightly before createdAt on creation.
+            action = 'update' if timestamp(comment['updatedAt']) > timestamp(comment['createdAt']) else 'create'
+            human = comment.get('user') and not comment.get('botActor')
+            await self.handle_linear({'organizationId': self.settings.linear_workspace_id,
+                                      'type': 'Comment', 'action': action,
+                                      'actor': {'type': 'user' if human else 'integration',
+                                                'name': (comment.get('user') or {}).get('name', 'Linear')},
+                                      'data': {**comment, 'issueId': task['linear_id'],
+                                               'parentId': (comment.get('parent') or {}).get('id')}})
+
     async def handle_linear(self, payload: dict) -> None:
         data = payload.get("data", {})
         if payload.get("organizationId") != self.settings.linear_workspace_id:
             return
+        if payload.get('type') == 'Issue' and payload.get('action') == 'remove':
+            local = self.store.one('SELECT id FROM tasks WHERE linear_id=?', (data.get('id'),))
+            if local and self.settings.linear_label_sync:
+                self.hide_linear(local['id'])
+            return
         if payload.get("type") == "Issue" and payload.get("action") in {"create", "update"}:
-            # Only explicitly imported issues can execute, never the whole workspace.
             local = self.store.one("SELECT * FROM tasks WHERE linear_id=?", (data.get("id"),))
-            if not local:
+            if not local and not self.settings.linear_label_sync:
                 return
-            issue = await self.fetch_linear_issue(data["id"])
+            # A workspace webhook can include other teams. Ignore those before fetching.
+            if not local and data.get('teamId') and data['teamId'] != self.settings.linear_team_id:
+                return
+            try:
+                issue = await self.fetch_linear_issue(data["id"], allow_other_team=self.settings.linear_label_sync)
+            except DomainError as exc:
+                if exc.status == 404 and local and self.settings.linear_label_sync:
+                    self.hide_linear(local['id'])
+                    return
+                raise
+            if self.settings.linear_label_sync:
+                if (not self.belongs_on_board(issue)
+                        or issue['state']['id'] not in self.settings.linear_states.values()):
+                    if local:
+                        self.hide_linear(local['id'])
+                    return
+                if not local:
+                    await self.import_linear(issue['id'], provider=self.settings.linear_provider,
+                                             question='This issue is waiting for input in Linear. What is needed to proceed?')
+                    return
             with self.store.transaction() as db:
                 task = self.service._task(db, local["id"])
+                if task['hidden']:
+                    active = db.execute("SELECT 1 FROM runs WHERE task_id=? AND status='running'", (task['id'],)).fetchone()
+                    if active:
+                        return  # Wait for cancellation to finish; the next scan restores the card.
+                    state = self.lane(issue['state']['id'])
+                    state = 'todo' if state == 'in_progress' else state
+                    db.execute('UPDATE tasks SET hidden=0,state=?,linear_updated_at=NULL,linear_watch_since=? WHERE id=?',
+                               (state, timestamp(issue['updatedAt']), task['id']))
+                    if state == 'todo':
+                        self.service._schedule(db, task['id'], 'linear-label-added')
+                    if state == 'waiting_on_input' and not task['blocker_comment_id']:
+                        comment = self.service._comment(db, task['id'], 'What input is needed to proceed?', 'system', 'linear')
+                        db.execute('UPDATE tasks SET blocker_comment_id=? WHERE id=?', (comment['id'], task['id']))
+                    self.service._event(db, 'task.restored', task['id'], {}, 'linear')
+                    task = self.service._task(db, task['id'])
                 if timestamp(issue["updatedAt"]) <= timestamp(task["linear_updated_at"]):
                     return
                 # Local changes that have not reached Linear take precedence over an inbound snapshot.
@@ -194,7 +320,7 @@ class Integrations:
         if payload.get("type") != "Comment":
             return
         local = self.store.one("SELECT * FROM tasks WHERE linear_id=?", (data.get("issueId"),))
-        if not local:
+        if not local or local['hidden']:
             return
         action = payload.get("action")
         external_id = f"linear:{data.get('id')}"
@@ -319,7 +445,9 @@ class Integrations:
 
     async def deliver(self, item: dict) -> None:
         payload, kind = json.loads(item["payload"]), item["kind"]
-        if kind == "linear.sync":
+        if kind == 'linear.scan':
+            await self.sync_labelled()
+        elif kind == "linear.sync":
             await self.sync_linear_task(payload["task_id"])
         elif kind == "linear.comment":
             await self.sync_linear_comment(payload["task_id"], payload["comment_id"])

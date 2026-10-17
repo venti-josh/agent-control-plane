@@ -39,7 +39,10 @@ async function refresh() {
   tasks = data; drawBoard();
   if (selected && $('task-dialog').open) {
     const task = await api(`/tasks/${selected.id}`);
-    if (version === refreshVersion && selected?.id === task.id) { selected = task; drawTask(); }
+    if (version === refreshVersion && selected?.id === task.id) {
+      if (task.hidden) { $('task-dialog').close(); toast('The issue left ACP. Assign it to the board owner and add its acp label in Linear to restore it.'); }
+      else { selected = task; drawTask(); }
+    }
   }
 }
 async function moveTask(id, state) {
@@ -85,15 +88,55 @@ async function postComment(mode) {
   else await api(`/tasks/${selected.id}/comments`,'POST',{body,...(mode === 'answer' ? {resume:true,in_reply_to:selected.blocker_comment_id} : {})});
   $('comment-body').value = ''; await refresh();
 }
+let linearDiscovery, linearStatus, linearEditing = false;
+async function updateLinearStatus() {
+  const state = await api('/integrations/linear/status');
+  config.linear_enabled = state.configured;
+  $('board-owner').textContent = state.user_name ? `${state.user_name}’s board` : '';
+  $('board-owner').hidden = !state.user_name;
+  linearStatus = state;
+  $('linear-badge').textContent = state.configured ? 'Connected' : 'Not connected';
+  $('linear-status').textContent = state.configured ? `${state.user_name || 'Your Linear user'} · ${state.team_name || state.team_id} · ${labels[state.provider]}` : 'Connect Linear to bring your issues onto the board.';
+  $('linear-error').textContent = state.sync_error || (state.failed_deliveries ? `${state.failed_deliveries} failed deliveries. Open Advanced → Delivery diagnostics.` : '');
+  $('linear-error').hidden = !$('linear-error').textContent;
+  $('linear-connected').hidden = !state.configured || linearEditing;
+  $('linear-connect-form').hidden = (state.configured && !linearEditing) || !$('linear-setup-form').hidden;
+  $('linear-webhook-details').hidden = !state.configured;
+  $('linear-import-details').hidden = !state.configured;
+  $('linear-webhook-status').textContent = `${state.webhook_registered ? 'Webhook registered. ' : ''}${state.last_webhook_at ? `Last signed delivery: ${time(state.last_webhook_at)}.` : 'No signed delivery received yet.'}`;
+  if (!$('linear-webhook-url').value) $('linear-webhook-url').value = state.webhook_url;
+}
+function updateMappingSummary() {
+  const missing = config.states.filter(lane => !document.querySelector(`[data-linear-lane="${lane.id}"]`).value);
+  $('linear-mapping-summary').textContent = missing.length ? 'Some board lanes need a new Linear status.' : 'Your Linear statuses are matched automatically.';
+  $('linear-create-label').hidden = !missing.length;
+  $('linear-create-description').textContent = `Create ${missing.map(lane => lane.label).join(', ')} in Linear`;
+}
+function drawLinearMapping() {
+  const team = linearDiscovery.teams.find(t => t.id === $('linear-team').value);
+  $('linear-mapping').innerHTML = team ? config.states.map(lane => `<label>${esc(lane.label)}<select data-linear-lane="${lane.id}"><option value="">Create a status</option>${team.states.map(s => `<option value="${esc(s.id)}" ${team.suggested_states[lane.id] === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label>`).join('') : '';
+  if (team) updateMappingSummary();
+}
+async function resetLinearEditor() {
+  linearEditing = false; linearDiscovery = null;
+  $('linear-key').value = ''; $('linear-setup-form').hidden = true;
+  $('linear-workflow-details').open = false;
+  await updateLinearStatus();
+}
+
+async function linearBusy(id, work) {
+  $(id).disabled = true;
+  try { await work(); } finally { $(id).disabled = false; }
+}
 async function showSettings() {
-  $('linear-status').textContent = config.linear_enabled ? 'Connected configuration: one workspace, one team.' : 'Not configured. Add LINEAR_* values to .env and restart. No issues are imported automatically.';
-  $('linear-form').hidden = !config.linear_enabled;
+  await updateLinearStatus();
   const [subs, deliveries] = await Promise.all([api('/subscriptions'),api('/deliveries?status=failed')]);
   $('subscription-list').innerHTML = subs.map(s => `<div class="subscription"><button data-unsubscribe="${s.id}">Remove</button>${esc(s.url)}<br><code>${esc(s.types.join(', '))}</code></div>`).join('') || '<p class="hint">No outgoing subscriptions.</p>';
   $('delivery-list').innerHTML = deliveries.map(d => `<div class="delivery"><button data-retry="${d.id}">Retry</button><strong>${esc(d.kind)}</strong> · ${d.attempts} attempts<br>${esc(d.last_error)}</div>`).join('') || '<p class="hint">No failed deliveries.</p>';
   document.querySelectorAll('[data-unsubscribe]').forEach(b => b.onclick = attempt(async () => { await api(`/subscriptions/${b.dataset.unsubscribe}`,'DELETE'); await showSettings(); }));
   document.querySelectorAll('[data-retry]').forEach(b => b.onclick = attempt(async () => { await api(`/deliveries/${b.dataset.retry}/retry`,'POST'); await showSettings(); }));
-  if (!$('settings-dialog').open) $('settings-dialog').showModal();
+  $('delivery-summary').textContent = deliveries.length ? `Delivery diagnostics (${deliveries.length} failed)` : 'Delivery diagnostics';
+  if (!$('settings-dialog').open) { $('settings-advanced').open = false; $('settings-dialog').showModal(); }
 }
 async function health() {
   try {
@@ -105,6 +148,8 @@ async function health() {
 }
 async function init() {
   config = await api('/config');
+  $('board-owner').textContent = config.linear_user_name ? `${config.linear_user_name}’s board` : '';
+  $('board-owner').hidden = !config.linear_user_name;
   $('default-provider').textContent = 'Default: ' + labels[config.default_provider];
   $('create-form').elements.provider.value = config.default_provider;
   $('create-form').elements.repo_path.value = config.default_repo;
@@ -138,7 +183,34 @@ async function init() {
     const data = Object.fromEntries(new FormData($('linear-form'))); if (!data.repo_path) delete data.repo_path;
     await api('/integrations/linear/import','POST',data); $('settings-dialog').close(); await refresh();
   });
-  $('reconcile-linear').onclick = attempt(async () => { const result = await api('/integrations/linear/reconcile','POST'); toast(`Queued ${result.queued} linked issue checks.`); });
+  $('linear-connect-form').onsubmit = attempt(() => linearBusy('linear-discover', async () => {
+    linearDiscovery = await api('/integrations/linear/discover','POST',{api_key:$('linear-key').value});
+    linearEditing = true;
+    $('linear-owner').textContent = `Connected as ${linearDiscovery.user.name}`;
+    $('linear-team').innerHTML = linearDiscovery.teams.map(t => `<option value="${esc(t.id)}">${esc(t.name)} (${esc(t.key)})</option>`).join('');
+    if (linearDiscovery.teams.some(t => t.id === linearStatus.team_id)) $('linear-team').value = linearStatus.team_id;
+    $('linear-provider').value = linearStatus.provider || 'codex';
+    $('linear-setup-form').hidden = !linearDiscovery.teams.length;
+    $('linear-connect-form').hidden = !!linearDiscovery.teams.length;
+    $('linear-save').textContent = linearStatus.configured ? 'Save changes' : 'Connect Linear';
+    drawLinearMapping();
+    if (!linearDiscovery.teams.length) toast('No teams are accessible with this API key.');
+  }));
+  $('linear-team').onchange = drawLinearMapping;
+  $('linear-mapping').onchange = updateMappingSummary;
+  $('linear-edit').onclick = attempt(async () => { linearEditing = true; document.querySelector('#linear-connect-form .linear-cancel').hidden = false; await updateLinearStatus(); });
+  document.querySelectorAll('.linear-cancel').forEach(button => button.onclick = attempt(resetLinearEditor));
+  $('linear-setup-form').onsubmit = attempt(() => linearBusy('linear-save', async () => {
+    const states = Object.fromEntries([...document.querySelectorAll('[data-linear-lane]')].map(s => [s.dataset.linearLane,s.value]));
+    await api('/integrations/linear/configure','POST',{api_key:$('linear-key').value,team_id:$('linear-team').value,states,create_missing:$('linear-create-missing').checked,provider:$('linear-provider').value});
+    await resetLinearEditor(); toast('Linear connected. Your assigned acp issues will sync automatically.');
+  }));
+  $('linear-webhook-form').onsubmit = attempt(() => linearBusy('linear-register', async () => {
+    await api('/integrations/linear/webhook','POST',{url:$('linear-webhook-url').value.trim()});
+    await updateLinearStatus(); toast('Webhook registered. Change an imported issue in Linear to verify delivery.');
+  }));
+  $('settings-dialog').addEventListener('close', () => { $('linear-key').value = ''; linearEditing = false; linearDiscovery = null; $('linear-setup-form').hidden = true; $('linear-workflow-details').open = false; });
+  $('reconcile-linear').onclick = attempt(async () => { const result = await api('/integrations/linear/reconcile','POST'); toast('Queued a scan for issues with the acp label.'); });
   $('demo-btn').onclick = attempt(async () => {
     $('demo-btn').disabled = true;
     try {
@@ -152,5 +224,6 @@ async function init() {
   stream.onerror = () => { $('connection').textContent = 'Reconnecting'; $('connection').classList.remove('live'); };
   stream.addEventListener('board', () => { clearTimeout(refreshTimer); refreshTimer = setTimeout(() => refresh().catch(e => toast(e.message)),150); });
   setInterval(health,5000);
+  setInterval(() => { if ($('settings-dialog').open) updateLinearStatus().catch(() => {}); },5000);
 }
 init().catch(error => toast(error.message));

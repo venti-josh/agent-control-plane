@@ -246,7 +246,7 @@ def test_linear_webhook_timestamp_workspace_and_signature(linear_service):
             raw=json.dumps(payload).encode()
             return client.post('/hooks/linear',content=raw,headers={
                 'Linear-Delivery':str(time.time_ns()),'Linear-Signature':sign('linear-secret',raw)})
-        assert send().status_code==202
+        assert send().status_code==200
         assert send(webhookTimestamp=int((time.time()-120)*1000)).status_code==401
         assert send(organizationId='different-workspace').status_code==422
         assert client.get('/api/tasks').status_code==404
@@ -283,3 +283,174 @@ def test_nonfinite_signed_linear_timestamp_is_rejected(linear_service):
         response = client.post('/hooks/linear', content=raw,
                                headers={'Linear-Signature':signature, 'Linear-Delivery':'nan-test'})
     assert response.status_code == 401
+
+
+async def test_acp_label_imports_removal_stops_work_and_readdition_reuses_card(linear_service):
+    linear_service.settings.linear_label_sync = True
+    linear_service.settings.linear_provider = 'demo'
+    remote = issue('todo', labels={'nodes': [{'name': 'acp'}]})
+    async with httpx.AsyncClient(transport=gql_transport(remote)) as client:
+        integration = Integrations(linear_service, client)
+        event = {'organizationId': 'workspace-one', 'type': 'Issue', 'action': 'update', 'data': {'id': 'issue-one'}}
+        await integration.handle_linear(event)
+        tasks = linear_service.list_tasks()
+        assert len(tasks) == 1
+        task = tasks[0]
+        assert task['provider'] == 'demo'
+        assert len(linear_service.get_task(task['id'])['runs']) == 1
+        run = linear_service.claim_next()
+        linear_service.mark_started(run['id'])
+        remote['labels']['nodes'] = []
+        await integration.handle_linear(event)
+        assert linear_service.list_tasks() == []
+        assert linear_service.store.one('SELECT stop_requested FROM runs WHERE id=?', (run['id'],))['stop_requested'] == 1
+        linear_service.finish_run(run['id'])
+        remote['labels']['nodes'] = [{'name': 'ACP'}]
+        await integration.handle_linear(event)
+        restored = linear_service.list_tasks()
+        assert len(restored) == 1 and restored[0]['id'] == task['id']
+        assert sum(r['status'] == 'queued' for r in linear_service.get_task(task['id'])['runs']) == 1
+
+
+async def test_unlabelled_issue_never_starts_work_in_label_mode(linear_service):
+    linear_service.settings.linear_label_sync = True
+    async with httpx.AsyncClient(transport=gql_transport(issue(labels={'nodes': []}))) as client:
+        await Integrations(linear_service, client).handle_linear(
+            {'organizationId': 'workspace-one', 'type': 'Issue', 'action': 'create', 'data': {'id': 'issue-one'}})
+    assert linear_service.list_tasks() == []
+
+
+async def test_label_scan_imports_existing_issues_and_recovers_missed_removals(linear_service):
+    linear_service.settings.linear_label_sync = True
+    linear_service.settings.linear_provider = 'demo'
+    remote = issue('planning', labels={'nodes': [{'name': 'acp'}]})
+    items = [remote]
+    def respond(request):
+        body = json.loads(request.content)
+        if 'ACPLabelled' in body['query']:
+            return httpx.Response(200, json={'data': {'organization': {'id': 'workspace-one'},
+                'team': {'issues': {'nodes': items, 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
+        if 'ACPComments' in body['query']:
+            return httpx.Response(200, json={'data': {'issue': {'comments': {'nodes': [], 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
+        return httpx.Response(200, json={'data': {'organization': {'id': 'workspace-one'}, 'issue': remote}})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        integration = Integrations(linear_service, client)
+        await integration.sync_labelled()
+        assert len(linear_service.list_tasks()) == 1
+        items.clear()
+        remote['labels']['nodes'] = []
+        await integration.sync_labelled()
+        assert linear_service.list_tasks() == []
+
+
+async def test_hidden_task_cannot_be_requeued_from_stale_dialog(linear_service):
+    task = await imported(linear_service)
+    async with httpx.AsyncClient() as client:
+        Integrations(linear_service, client).hide_linear(task['id'])
+    with pytest.raises(DomainError, match='label'):
+        linear_service.move_task(task['id'], 'todo')
+    assert linear_service.claim_next() is None
+
+
+async def test_issue_moved_out_of_team_cancels_and_hides(linear_service):
+    task = await imported(linear_service, 'todo')
+    linear_service.settings.linear_label_sync = True
+    run = linear_service.claim_next()
+    linear_service.mark_started(run['id'])
+    remote = issue('todo', team={'id': 'other-team'}, labels={'nodes': []})
+    async with httpx.AsyncClient(transport=gql_transport(remote)) as client:
+        await Integrations(linear_service, client).handle_linear(
+            {'organizationId': 'workspace-one', 'type': 'Issue', 'action': 'update',
+             'data': {'id': 'issue-one'}})
+    assert linear_service.list_tasks() == []
+    assert linear_service.store.one('SELECT stop_requested FROM runs WHERE id=?', (run['id'],))['stop_requested'] == 1
+
+
+@pytest.mark.parametrize("updated_offset", [0, -0.020])
+async def test_polling_recovers_human_reply_without_replaying_old_or_bot_commands(linear_service, updated_offset):
+    from datetime import datetime, timezone
+    task = await imported(linear_service, 'todo')
+    linear_service.request_input(task['id'], 'Which option?')
+    now = time.time()
+    def stamp(t): return datetime.fromtimestamp(t, timezone.utc).isoformat()
+    comments = [
+        {'id': 'old', 'body': '/resume old answer', 'createdAt': stamp(now-3600), 'updatedAt': stamp(now-3600), 'user': {'name': 'You'}, 'botActor': None, 'parent': None},
+        {'id': 'bot', 'body': '/resume bot answer', 'createdAt': stamp(now+1), 'updatedAt': stamp(now+1), 'user': {'name': 'Bot'}, 'botActor': {'__typename': 'ActorBot'}, 'parent': None},
+        {'id': 'human', 'body': '/resume human answer', 'createdAt': stamp(now+2), 'updatedAt': stamp(now+2+updated_offset), 'user': {'name': 'You'}, 'botActor': None, 'parent': None},
+    ]
+    def respond(request):
+        return httpx.Response(200, json={'data': {'issue': {'comments': {'nodes': comments, 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        integration = Integrations(linear_service, client)
+        await integration.poll_comments(task['id'])
+        await integration.poll_comments(task['id'])
+    current = linear_service.get_task(task['id'])
+    queued = [r for r in current['runs'] if r['status']=='queued']
+    assert len(queued)==1
+    assert len(queued[0]['inputs'])==1
+    assert next(c for c in current['comments'] if c['id']==queued[0]['inputs'][0]['comment_id'])['body']=='/resume human answer'
+    assert not any(c['body']=='/resume old answer' for c in current['comments'])
+
+
+async def test_stale_foreign_team_event_uses_current_issue_state(linear_service):
+    task = await imported(linear_service, 'todo')
+    linear_service.settings.linear_label_sync = True
+    remote = issue('todo', labels={'nodes': [{'name': 'acp'}]})
+    async with httpx.AsyncClient(transport=gql_transport(remote)) as client:
+        await Integrations(linear_service, client).handle_linear(
+            {'organizationId': 'workspace-one', 'type': 'Issue', 'action': 'update',
+             'data': {'id': 'issue-one', 'teamId': 'old-team'}})
+    assert len(linear_service.list_tasks()) == 1
+    assert linear_service.get_task(task['id'])['hidden'] == 0
+
+
+async def test_labelled_issue_requires_board_owner_and_reassignment_stops_work(linear_service):
+    linear_service.settings.linear_label_sync = True
+    linear_service.settings.linear_user_id = 'owner-one'
+    linear_service.settings.linear_provider = 'demo'
+    remote = issue('todo', labels={'nodes': [{'name': 'acp'}]}, assignee={'id': 'someone-else'})
+    async with httpx.AsyncClient(transport=gql_transport(remote)) as client:
+        integration = Integrations(linear_service, client)
+        event = {'organizationId': 'workspace-one', 'type': 'Issue', 'action': 'update', 'data': {'id': 'issue-one'}}
+        await integration.handle_linear(event)
+        assert not linear_service.list_tasks()
+        remote['assignee'] = {'id': 'owner-one'}
+        await integration.handle_linear(event)
+        task = linear_service.list_tasks()[0]
+        run = linear_service.claim_next()
+        linear_service.mark_started(run['id'])
+        remote['assignee'] = None
+        await integration.handle_linear(event)
+        assert not linear_service.list_tasks()
+        assert linear_service.store.one('SELECT stop_requested FROM runs WHERE id=?', (run['id'],))['stop_requested'] == 1
+        assert linear_service.get_task(task['id'])['hidden'] == 1
+
+
+async def test_reply_after_reassignment_before_scan_resumes_restored_task(linear_service):
+    from datetime import datetime, timezone
+    task = await imported(linear_service, 'todo')
+    linear_service.request_input(task['id'], 'Which option?')
+    linear_service.settings.linear_label_sync = True
+    now = time.time()
+    def stamp(t): return datetime.fromtimestamp(t, timezone.utc).isoformat()
+    with linear_service.store.transaction() as db:
+        db.execute('UPDATE tasks SET created_at=? WHERE id=?', (now-120, task['id']))
+    remote = issue('waiting_on_input', updated=stamp(now-30), labels={'nodes': [{'name': 'acp'}]})
+    comments = [
+        {'id': 'hidden-reply', 'body': '/resume while hidden', 'createdAt': stamp(now-60), 'updatedAt': stamp(now-60), 'user': {'name': 'You'}, 'botActor': None, 'parent': None},
+        {'id': 'restored-reply', 'body': '/resume after reassignment', 'createdAt': stamp(now-10), 'updatedAt': stamp(now-10), 'user': {'name': 'You'}, 'botActor': None, 'parent': None},
+    ]
+    def respond(request):
+        if 'ACPComments' in json.loads(request.content)['query']:
+            return httpx.Response(200, json={'data': {'issue': {'comments': {'nodes': comments, 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
+        return httpx.Response(200, json={'data': {'organization': {'id': 'workspace-one'}, 'issue': remote}})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        integration = Integrations(linear_service, client)
+        integration.hide_linear(task['id'])
+        await integration.handle_linear({'organizationId': 'workspace-one', 'type': 'Issue', 'action': 'update', 'data': {'id': 'issue-one'}})
+        await integration.poll_comments(task['id'])
+    current = linear_service.get_task(task['id'])
+    assert current['state'] == 'waiting_on_input'
+    assert sum(r['status'] == 'queued' for r in current['runs']) == 1
+    assert any(c['body'] == '/resume after reassignment' for c in current['comments'])
+    assert not any(c['body'] == '/resume while hidden' for c in current['comments'])

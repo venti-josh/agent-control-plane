@@ -85,7 +85,7 @@ class TaskService:
                               {"subscription_id": sub["id"], "event_id": event_id})
         if self.settings.linear_api_key and origin != "linear" and task_id:
             task = self._task(db, task_id)
-            if task["linear_id"]:
+            if task["linear_id"] and not task['hidden']:
                 if kind in {"task.state_changed", "task.updated"}:
                     Store.enqueue(db, "linear.sync", f"linear-state:{event_id}", {"task_id": task_id})
                 if kind in {"comment.created", "comment.updated", "comment.deleted"}:
@@ -112,6 +112,8 @@ class TaskService:
 
     def _schedule(self, db: sqlite3.Connection, task_id: str, trigger: str, context: dict | None = None) -> str:
         task = self._task(db, task_id)
+        if task['hidden']:
+            raise DomainError('Re-add the acp label in Linear before running this task.')
         if task["state"] not in {"todo", "waiting_on_input", "ready_for_review", "in_progress"}:
             raise DomainError("This task is not in an executable lane")
         pending = row(db.execute("SELECT * FROM runs WHERE task_id=? AND status='queued'", (task_id,)).fetchone())
@@ -132,6 +134,8 @@ class TaskService:
               *, comment: str | None = None, internal: bool = False,
               run_id: str | None = None, expected_version: int | None = None,
               blocker_comment_id: str | None = None) -> dict:
+        if task['hidden']:
+            raise DomainError('Re-add the acp label in Linear before changing this task.')
         if state not in STATES:
             raise DomainError("Unknown state", 422)
         if expected_version is not None and task["version"] != expected_version:
@@ -208,7 +212,7 @@ class TaskService:
 
     def list_tasks(self) -> list[dict]:
         return self.store.all("SELECT t.*, (SELECT status FROM runs r WHERE r.task_id=t.id "
-                              "ORDER BY created_at DESC LIMIT 1) AS run_status FROM tasks t ORDER BY created_at DESC")
+                              "ORDER BY created_at DESC LIMIT 1) AS run_status FROM tasks t WHERE t.hidden=0 ORDER BY created_at DESC")
 
     def move_task(self, task_id: str, state: str, comment: str | None = None,
                   expected_version: int | None = None, origin: str = "api") -> dict:
@@ -341,7 +345,7 @@ class TaskService:
     def claim_next(self) -> dict | None:
         with self.store.transaction() as db:
             run = row(db.execute("SELECT r.* FROM runs r JOIN tasks t ON t.id=r.task_id WHERE r.status='queued' "
-                                 "AND t.state IN ('todo','waiting_on_input','ready_for_review','in_progress') "
+                                 "AND t.hidden=0 AND t.state IN ('todo','waiting_on_input','ready_for_review','in_progress') "
                                  "AND NOT EXISTS(SELECT 1 FROM runs x WHERE x.task_id=r.task_id AND x.status='running') "
                                  "ORDER BY r.created_at LIMIT 1").fetchone())
             if not run:

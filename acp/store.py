@@ -115,6 +115,11 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
             db.executescript(SCHEMA)
+            columns = {r['name'] for r in db.execute('PRAGMA table_info(tasks)')}
+            if 'hidden' not in columns:
+                db.execute('ALTER TABLE tasks ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0')
+            if 'linear_watch_since' not in columns:
+                db.execute('ALTER TABLE tasks ADD COLUMN linear_watch_since REAL NOT NULL DEFAULT 0')
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

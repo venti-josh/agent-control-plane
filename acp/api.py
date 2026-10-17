@@ -10,9 +10,11 @@ from typing import Literal
 
 import httpx
 from fastapi import FastAPI, Query, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__
@@ -89,9 +91,25 @@ class LinearImport(Model):
     question: str | None = None
 
 
+class LinearDiscover(Model):
+    api_key: SecretStr = SecretStr('')
+
+
+class LinearConfigure(LinearDiscover):
+    team_id: str
+    states: dict[str, str] | None = None
+    create_missing: bool = False
+    provider: Literal['codex', 'claude', 'demo'] = 'codex'
+
+
+class LinearWebhook(Model):
+    url: str
+
+
 def create_app(settings: Settings | None = None, *, start_worker: bool = True,
                hooks_only: bool = False, runners: dict | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
+    settings.load_linear()
     settings.validate()
     store = Store(settings.db_path)
     service = TaskService(store, settings)
@@ -115,6 +133,12 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True,
     @app.exception_handler(DomainError)
     async def domain_error(request, exc):
         return JSONResponse({"detail": str(exc)}, status_code=exc.status)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request, exc):
+        if request.url.path.startswith('/api/integrations/linear/'):
+            return JSONResponse({'detail': 'Invalid Linear setup fields. Check the field types and required values.'}, status_code=422)
+        return await request_validation_exception_handler(request, exc)
 
     @app.middleware("http")
     async def local_boundary(request: Request, call_next):
@@ -159,8 +183,9 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True,
             return {"accepted": True, "ignored": True}
         return service.receive("github", delivery_id, {"event": event, "payload": data}, "github.incoming")
 
-    @app.post("/hooks/linear", status_code=202)
+    @app.post("/hooks/linear", status_code=200)
     async def linear_hook(request: Request):
+        settings.load_linear()
         raw, data = await webhook_body(request)
         verify_signature(raw, settings.linear_webhook_secret, request.headers.get("linear-signature", ""))
         if not settings.linear_workspace_id or data.get("organizationId") != settings.linear_workspace_id:
@@ -187,9 +212,11 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True,
 
     @app.get("/api/config")
     def config():
+        linear_saved = settings.load_linear()
         return {"states": [{"id": s, "label": label} for s, label in zip(STATES, LABELS)],
                 "providers": list(PROVIDERS), "default_provider": settings.default_provider,
-                "default_repo": settings.default_repo, "linear_enabled": bool(settings.linear_api_key),
+                "default_repo": settings.default_repo, "linear_enabled": settings.linear_enabled,
+                "linear_user_name": linear_saved.get('user_name', ''),
                 "github_enabled": bool(settings.github_webhook_secret)}
 
     @app.get("/api/tasks")
@@ -321,6 +348,26 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True,
                        (time.time(), delivery_id))
         return {"queued": True}
 
+    from .linear_setup import LinearSetup
+    linear_setup = LinearSetup(service)
+
+    @app.get('/api/integrations/linear/status')
+    def linear_status():
+        return linear_setup.status()
+
+    @app.post('/api/integrations/linear/discover')
+    async def linear_discover(body: LinearDiscover):
+        return await linear_setup.discover(body.api_key.get_secret_value())
+
+    @app.post('/api/integrations/linear/configure')
+    async def linear_configure(body: LinearConfigure):
+        return await linear_setup.configure(body.api_key.get_secret_value(), body.team_id,
+                                            body.states, body.create_missing, body.provider)
+
+    @app.post('/api/integrations/linear/webhook')
+    async def linear_webhook(body: LinearWebhook):
+        return await linear_setup.webhook(body.url)
+
     @app.post("/api/integrations/linear/import", status_code=201)
     async def import_linear(body: LinearImport):
         async with httpx.AsyncClient(timeout=20) as client:
@@ -335,6 +382,10 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True,
     def reconcile_linear():
         if not settings.linear_api_key:
             raise DomainError("Linear is not configured", 503)
+        if settings.linear_label_sync:
+            with store.transaction() as db:
+                Store.enqueue(db, 'linear.scan', f'scan:{time.time_ns()}', {})
+            return {'queued': 1}
         linked = store.all("SELECT linear_id FROM tasks WHERE linear_id IS NOT NULL")
         with store.transaction() as db:
             for task in linked:

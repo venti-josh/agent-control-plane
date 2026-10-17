@@ -5,6 +5,7 @@ import json
 import sys
 import webbrowser
 from collections import deque
+from pathlib import Path
 
 import httpx
 
@@ -65,6 +66,25 @@ def main() -> None:
     events.add_argument("--after", type=int, default=0)
     events.add_argument("--follow", action="store_true")
     sub.add_parser("mcp")
+    linear = sub.add_parser('linear', help='Configure Linear from an agent or terminal; JSON output, no secrets')
+    linear_sub = linear.add_subparsers(dest='linear_command', required=True)
+    linear_sub.add_parser('status')
+    discover = linear_sub.add_parser('discover')
+    discover.add_argument('--key-file', help='Private API key file; otherwise use saved configuration')
+    configure = linear_sub.add_parser('configure')
+    configure.add_argument('--key-file')
+    configure.add_argument('--team-id', required=True)
+    configure.add_argument('--states-file', help='Optional JSON object of lane names to status IDs')
+    configure.add_argument('--create-missing', action='store_true', help='Create missing statuses in Linear')
+    configure.add_argument('--provider', choices=['codex', 'claude', 'demo'], default='codex')
+    linear_sub.add_parser('sync', help='Sync issues carrying the acp label')
+    hook = linear_sub.add_parser('webhook')
+    hook.add_argument('--url', required=True, help='Public HTTPS URL ending in /hooks/linear')
+    imp = linear_sub.add_parser('import')
+    imp.add_argument('issue_id')
+    imp.add_argument('--provider', choices=['codex', 'claude', 'demo'])
+    imp.add_argument('--repo')
+    imp.add_argument('--question')
     args = parser.parse_args()
     try:
         from . import daemon
@@ -114,7 +134,25 @@ def main() -> None:
             raise RuntimeError("The selected ACP service is unavailable. Run acp start (or acp serve); inspect acp logs.")
         base = running["url"]
         result = None
-        if args.command == "create":
+        if args.command == 'linear':
+            action = args.linear_command
+            data = {}
+            if action in {'discover', 'configure'}:
+                key_file = getattr(args, 'key_file', None)
+                data['api_key'] = Path(key_file).expanduser().read_text().strip() if key_file else settings.linear_api_key
+            if action == 'configure':
+                data.update(team_id=args.team_id, create_missing=args.create_missing, provider=args.provider)
+                if args.states_file:
+                    data['states'] = json.loads(Path(args.states_file).read_text())
+            elif action == 'webhook':
+                data['url'] = args.url
+            elif action == 'import':
+                data = {'issue_id': args.issue_id, 'provider': args.provider,
+                        'repo_path': args.repo, 'question': args.question}
+            result = request(base, 'GET' if action == 'status' else 'POST',
+                             '/api/integrations/linear/' + ('reconcile' if action == 'sync' else action),
+                             None if action == 'status' else data)
+        elif args.command == "create":
             result = request(base, "POST", "/api/tasks", {"title": args.title, "description": args.description,
                                                          "provider": args.provider, "repo_path": args.repo,
                                                          "state": args.state})

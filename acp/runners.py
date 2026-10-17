@@ -158,6 +158,13 @@ class CLIRunner:
         executable = settings.claude_command if task["provider"] == "claude" else settings.codex_command
         if not shutil.which(executable):
             raise RuntimeError(f"{executable} is not installed or not on PATH. Install and sign in, then retry.")
+        discovering = not task['repo_path'] and not task['workspace']
+        if discovering:
+            from .repositories import select_repository
+            service.mark_started(run['id'])
+            if not await select_repository(service, task, run):
+                return
+            task = service.get_task(task['id'])
         path = await prepare_workspace(service, task)
         task = service.get_task(task["id"])
         common = await git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=path)
@@ -200,7 +207,8 @@ class CLIRunner:
                         if event.get("type") == "acp.launch_failed":
                             errors.append(event.get("message", "Agent failed to launch"))
                         elif event.get("type") == "acp.process_started":
-                            service.mark_started(run["id"])
+                            if not discovering:
+                                service.mark_started(run["id"])
                             launched = True
                             process.stdin.write(prompt.encode())
                             await process.stdin.drain()

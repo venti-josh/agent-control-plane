@@ -27,6 +27,8 @@ class Settings:
     base_url: str = "http://127.0.0.1:8765"
     default_provider: str = "demo"
     default_repo: str = ""
+    repo_search_roots: list[str] = field(default_factory=lambda: [str(Path.home() / name) for name in
+                                                               ('Documents', 'Projects', 'Developer', 'code', 'src')])
     max_concurrent_runs: int = 1
     run_timeout_seconds: float = 1800
     poll_seconds: float = 0.5
@@ -39,6 +41,9 @@ class Settings:
     linear_team_id: str = ""
     linear_webhook_secret: str = ""
     linear_states: dict[str, str] = field(default_factory=dict)
+    linear_label_sync: bool = False
+    linear_provider: str = 'codex'
+    linear_user_id: str = ''
     github_webhook_secret: str = ""
     github_token: str = ""
     max_delivery_attempts: int = 8
@@ -47,6 +52,22 @@ class Settings:
     @property
     def db_path(self) -> Path:
         return self.data_dir / "board.sqlite3"
+
+    @property
+    def linear_enabled(self) -> bool:
+        return bool(self.linear_api_key and self.linear_workspace_id and self.linear_team_id and self.linear_states)
+
+    def load_linear(self) -> dict:
+        """App-managed settings override the legacy environment configuration."""
+        path = self.data_dir.expanduser().resolve() / "linear.json"
+        if not path.exists():
+            return {}
+        data = json.loads(path.read_text())
+        for name in ("linear_api_key", "linear_workspace_id", "linear_team_id",
+                     "linear_webhook_secret", "linear_states", "linear_label_sync", "linear_provider", "linear_user_id"):
+            if name in data:
+                setattr(self, name, data[name])
+        return data
 
     def validate(self) -> None:
         if self.default_provider not in PROVIDERS:
@@ -58,7 +79,7 @@ class Settings:
                 raise ValueError("LINEAR_STATES_JSON must map all seven internal state names to Linear state IDs")
             if len(set(self.linear_states.values())) != len(STATES):
                 raise ValueError("Each lane must map to a different Linear state")
-        if self.linear_api_key and not (self.linear_workspace_id and self.linear_team_id and self.linear_states):
+        if (self.linear_states or self.linear_team_id or self.linear_workspace_id) and not self.linear_enabled:
             raise ValueError("Linear requires one workspace ID, one team ID, and the seven-state mapping")
         self.data_dir = self.data_dir.expanduser().resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -94,5 +115,8 @@ class Settings:
             github_webhook_secret=getenv("GITHUB_WEBHOOK_SECRET", ""),
             github_token=getenv("GITHUB_TOKEN", ""),
         )
+        s.load_linear()
+        if getenv('REPO_SEARCH_ROOTS') is not None:
+            s.repo_search_roots = [p for p in getenv('REPO_SEARCH_ROOTS').split(os.pathsep) if p]
         s.validate()
         return s

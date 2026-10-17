@@ -1,5 +1,42 @@
 # Verification record
 
+## v0.1.1 pre-release Linear setup and owner sync — 2026-10-16
+
+The checks in this section were performed on the local candidate before publication.
+
+- `make check`: **119 tests passed**, plus Ruff and JavaScript syntax checks.
+  The existing upstream Starlette HTTPX deprecation warning remains.
+- Guided UI and agent CLI both configured the live Linear team successfully.
+  The simplified Settings screen shows account, team, agent, and Sync now;
+  workflow mapping, webhooks, imports, subscriptions, and diagnostics are collapsed.
+- Boards are pinned to the API key's viewer ID. Live tests verified that only
+  issues assigned to that user with the `acp` label appear; removing either
+  hides the task, and restoration keeps its history.
+- Real Codex selected the intended repository automatically, asked for input,
+  resumed from a Linear reply, produced a verified file, revised it in the same
+  session, and synced Done. TRY-5 verified actual signed webhook delivery;
+  TRY-7 verified the flow with the webhook disabled and polling only.
+- Live discovery exposed Linear's creation timestamps sometimes having
+  `updatedAt` slightly before `createdAt`; regression coverage now preserves
+  new human commands. A separate regression covers replies posted after
+  reassignment but before the next scan.
+- The release-asset installer test passed install, service startup, demo task
+  input/review/revision/Done, stop, reinstall, and data preservation. Evidence:
+  `.acp/install-smoke-20261016-225943/report.json`.
+- The installed wheel then passed a fresh real Codex/Linear flow on **TRY-8**:
+  all three runs succeeded in one session, the expected two-line file was verified,
+  and Done synced. Owner/label removal and restoration also passed. Evidence:
+  `.acp/linear-installed-report.json`. All 18 packaged ACP files matched the
+  current source and installed wheel byte-for-byte.
+- Claude live execution was deferred at the user's request after its saved OAuth
+  token had expired. Mocked provider tests pass; this is not a live Claude claim.
+- The temporary webhook, tunnel, and isolated test service were removed/stopped.
+  The installed app uses polling and remains private on localhost:8765.
+
+Source-run evidence: `.acp/linear-live-report.json`,
+`.acp/linear-owner-report.json`, retained task worktrees/logs, and
+`.acp/settings-simplified.png`. Synthetic tasks made no source changes or pushes.
+
 ## Published v0.1.0 — 2026-10-16
 
 Source and release tag are public at commit

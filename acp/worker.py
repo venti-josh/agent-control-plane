@@ -108,8 +108,21 @@ class Worker:
     async def delivery_loop(self) -> None:
         async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
             integrations = Integrations(self.service, client)
+            next_linear_scan = 0
             while True:
                 try:
+                    if self.settings.linear_label_sync and time.monotonic() >= next_linear_scan:
+                        try:
+                            await integrations.sync_labelled()
+                        except Exception:
+                            with self.service.store.transaction() as db:
+                                db.execute("INSERT OR REPLACE INTO metadata VALUES('linear_sync_error',?)",
+                                           ('Linear label sync failed. Check credentials, team access and connection.',))
+                        else:
+                            with self.service.store.transaction() as db:
+                                db.execute("DELETE FROM metadata WHERE key='linear_sync_error'")
+                                db.execute("INSERT OR REPLACE INTO metadata VALUES('linear_last_sync',?)", (str(time.time()),))
+                        next_linear_scan = time.monotonic() + 60
                     if not await self.deliver_once(integrations):
                         await asyncio.sleep(self.settings.poll_seconds)
                 except asyncio.CancelledError:
