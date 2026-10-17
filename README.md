@@ -4,8 +4,9 @@ A small, local-first Kanban for **one person**, **Claude Code / Codex**, and opt
 
 ## Install
 
-ACP runs on macOS and Linux (including WSL). Once the first GitHub Release is
-published, install with one command:
+ACP runs on macOS and Linux (including WSL). Install the
+[latest GitHub release](https://github.com/venti-josh/agent-control-plane/releases/latest)
+with one command:
 
 ```sh
 curl -fsSL https://github.com/venti-josh/agent-control-plane/releases/latest/download/install.sh | sh

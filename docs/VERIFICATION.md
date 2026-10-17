@@ -1,5 +1,49 @@
 # Verification record
 
+## Published v0.1.0 — 2026-10-16
+
+Source and release tag are public at commit
+`fa270c52e8367d72e92524f4e46c533783f57202`.
+[Release v0.1.0](https://github.com/venti-josh/agent-control-plane/releases/tag/v0.1.0)
+contains the wheel, pinned installer, constraints, version file and checksums.
+
+The first GitHub check exposed an invalid `setup-uv@v9` action alias. Both workflows
+now pin the verified v10.3.0 commit. The tag was corrected before any release was
+published. The subsequent checks passed:
+
+- [Release workflow](https://github.com/venti-josh/agent-control-plane/actions/runs/38994939856):
+  **96 tests passed** on both macOS and Linux, plus Ruff/JavaScript checks and the
+  full installed demo task flow on each platform. Publication succeeded.
+- [Python matrix](https://github.com/venti-josh/agent-control-plane/actions/runs/38994939952):
+  macOS/Linux with Python 3.11 and 3.14 passed.
+- The public wheel was downloaded and all 16 packaged ACP source/UI files were
+  compared byte-for-byte with the release tag. All matched. Published wheel SHA-256:
+  `3feb5b9ac9d9edae181a77c4a5f0f46f92fcb90e2b061b7a9e79e24c316f836a`.
+
+The exact public single-command installation was then tested on macOS:
+
+```sh
+curl -fsSL https://github.com/venti-josh/agent-control-plane/releases/latest/download/install.sh | sh
+```
+
+The test used fresh isolated ACP/uv tool directories, hid uv from PATH, and used
+no local release URL override or GitHub credentials in the download command.
+The installer bootstrapped uv and fetched the public release assets successfully.
+The installed CLI started the service, opened the correct URL, and ran a real
+Codex task through input, implementation, revision and explicit Done. All three
+agent runs succeeded in one retained session/worktree, and independent unittest
+and exact-output assertions passed. An open event stream did not prevent stop;
+reinstall preserved configuration and the completed task. The test service was
+stopped at the end.
+
+Task: `d2ea092c-7340-43f1-bde7-4382677031f1`.
+Session: `01a147b1-7a3d-7f13-aa3e-31671d297eb3`.
+Local evidence: `.acp/github-install-smoke-20261016-222923/report.json`,
+`installer.log`, `task.json`, `unittest.log`, and the retained task worktree/logs.
+The public-download test harness is `.acp/github-install-smoke.py`; it uses the
+same installed task flow as `scripts/install-smoke.py`, replacing the local
+asset server with the literal GitHub download pipeline above.
+
 ## Release installer and background service — 2026-10-16
 
 The installed CLI now supports setup, start, stop, status, open, and logs. The
@@ -48,10 +92,8 @@ Final authenticated installed-package verification also passed:
   `e6992d9d12d4bef1379f5ca12c5003897f492579a5cf8b6174624c7b055ba89c`.
 
 The release workflow checks macOS and Linux before publishing a version tag.
-The current local tests ran on macOS. GitHub CI and public release download are
-not yet verified: the public repository is still empty and no release was
-published during implementation. The documented installer URL becomes usable
-after the initial source push and matching release tag are published.
+At the end of that implementation phase, tests had run locally on macOS and
+publication was pending. The published-release record above supersedes that status.
 
 ## ACP rename and uv setup — 2026-10-16
 
