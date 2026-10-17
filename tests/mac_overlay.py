@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from mac_surface import check_surface
 
 from acp import overlay
-from acp.activity import Activity
+from acp.codex_activity import CodexActivity, process_info
 from acp.api import create_app
 from acp.config import Settings
 
@@ -87,20 +87,19 @@ document.getElementById('activity-details').hidden=!event.data.expanded;
         async def preview_controls():
             return Path(__file__).with_name('overlay_preview.html').read_text()
 
-    svc = app.state.service
-    # Start from an empty synthetic history, even when retaining the evidence directory.
-    for table in ['subagent_activity', 'desktop_runs', 'runs', 'outbox', 'comments', 'artifacts', 'events', 'tasks']:
-        with svc.store.transaction() as db:
+    monitor = CodexActivity(settings.data_dir/'codex-activity.sqlite3')
+    owner = f'{os.getpid()}:{process_info(os.getpid())[1]}'
+    def emit(name, session='agent-0', **fields):
+        monitor.record(dict(hook_event_name=name, session_id=session, turn_id='turn', **fields), owner)
+    with monitor.connect() as db:
+        for table in ['agents', 'intervals', 'turns', 'waits', 'metadata']:
             db.execute(f'DELETE FROM {table}')
     for i in range(3):
-        svc.create_task(f'Synthetic agent {i + 1}', state='todo')
-        run = svc.claim_next()
-        svc.mark_started(run['id'])
-        with svc.store.transaction() as db:
-            db.execute('UPDATE runs SET started_at=? WHERE id=?', (time.time() - 1900, run['id']))
-    Activity(svc.store).report(run['id'], {'synthetic-child': 'running'})
-    waiting = svc.create_task('Synthetic question', state='todo')
-    svc.request_input(waiting['id'], 'Synthetic input wait')
+        emit('UserPromptSubmit', session=f'agent-{i}')
+    with monitor.connect() as db:
+        db.execute('UPDATE intervals SET start=?', (time.time()-1900,))
+    emit('SubagentStart', agent_id='synthetic-child')
+    emit('PreToolUse', session='waiting', tool_name='request_user_input', tool_use_id='q')
     server = uvicorn.Server(uvicorn.Config(app, log_level='error', ws='none'))
     thread = threading.Thread(target=lambda: server.run(sockets=[sock]), daemon=True)
     thread.start()

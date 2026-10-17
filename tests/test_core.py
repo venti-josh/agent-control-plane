@@ -248,3 +248,32 @@ def test_event_replay_and_task_filter(service):
     page = service.store.events(after=1, task_id=a['id'], limit=1)
     assert len(page) == 1 and page[0]['type'] == 'comment.created'
     assert page[0]['schema_version'] == 1
+
+
+def test_user_can_complete_waiting_task_without_restarting_agent(client):
+    service = client.app.state.service
+    task = service.create_task('Finished outside ACP', state='todo')
+    run = service.claim_next()
+    service.finish_run(run['id'], 'failed', 'Runner never started')
+    waiting = service.get_task(task['id'])
+    assert waiting['state'] == 'waiting_on_input'
+    response = client.post(f"/api/tasks/{task['id']}/transition",
+                           json={'state': 'done', 'expected_version': waiting['version']})
+    assert response.status_code == 200, response.text
+    done = service.get_task(task['id'])
+    assert done['state'] == 'done' and done['blocker_comment_id'] is None
+    assert len(done['runs']) == 1 and done['runs'][0]['status'] == 'failed'
+    assert len(done['comments']) == len(waiting['comments'])
+
+
+def test_completing_waiting_task_cancels_queued_work_and_fences_agent(service):
+    task, run = started(service)
+    service.request_input(task['id'], 'Question?', run['id'])
+    with service.store.transaction() as db:
+        service._schedule(db, task['id'], 'pending-input')
+    service.move_task(task['id'], 'done')
+    done = service.get_task(task['id'])
+    assert all(r['status'] != 'queued' for r in done['runs'])
+    assert next(r for r in done['runs'] if r['id'] == run['id'])['stop_requested']
+    with pytest.raises(DomainError, match='no longer active'):
+        service.add_comment(task['id'], 'Late response', run_id=run['id'])

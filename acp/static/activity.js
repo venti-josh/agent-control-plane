@@ -95,6 +95,7 @@ const activityOverlay = (() => {
       const response = await fetch('/api/activity', {signal:controller.signal, cache:'no-store'});
       if (!response.ok) throw new Error('Activity unavailable');
       const data = await response.json();
+      if (data.available === false) throw new Error(data.message || 'Codex activity unavailable');
       if (![data.running, data.subagents, data.waiting_on_input, ...['30m','1h','3h'].map(k => data.averages?.[k])]
         .every(n => Number.isFinite(n) && n >= 0)) throw new Error('Invalid activity');
       document.getElementById('activity-running').textContent = data.running;
@@ -106,11 +107,11 @@ const activityOverlay = (() => {
       const moods = {rainbow:'Comet is ecstatic with a rainbow trail', happy:'Comet is happy and flying', sad:'Comet is sad with drooping ears and falling tears', dead:'Comet is dead: X eyes and a limp tail'};
       cometPet.setMood(mood);
       document.getElementById('activity-pet').setAttribute('aria-label', moods[mood]);
-      status.textContent = ''; status.hidden = true;
+      status.textContent = data.message || ''; status.hidden = !data.message;
       tile.classList.remove('is-unavailable');
       native?.postMessage({action:'metrics', data:{...data, mood}});
-    } catch (_) {
-      status.textContent = 'Activity unavailable'; status.hidden = false; tile.classList.add('is-unavailable');
+    } catch (error) {
+      status.textContent = error.message?.startsWith('Codex') ? error.message : 'Activity unavailable'; status.hidden = false; tile.classList.add('is-unavailable');
       for (const id of ['running','waiting','30m','1h','3h']) document.getElementById(`activity-${id}`).textContent = '—';
       tile.dataset.mood = 'unavailable';
       cometPet.setMood('unavailable');

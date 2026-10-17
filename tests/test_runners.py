@@ -121,25 +121,29 @@ else:
 
 
 @pytest.mark.parametrize('provider', ['claude', 'codex'])
-async def test_cli_stdout_subagent_activity_reaches_api_and_closes_with_parent(
+async def test_cli_stdout_subagent_activity_is_retained_but_not_used_for_codex_pet(
         live_api, git_repo, fake_cli, provider):
     svc = live_api
     svc.settings.claude_command = svc.settings.codex_command = fake_cli
     task = svc.create_task('Observed child', description='[subagents]', provider=provider,
                            state='todo', repo_path=str(git_repo))
+    from acp.activity import Activity
     pending = asyncio.create_task(Worker(svc).run_once())
     try:
         async with httpx.AsyncClient(base_url=svc.settings.base_url) as api:
             for _ in range(300):
-                data = (await api.get('/api/activity')).json()
+                data = Activity(svc.store).summary()
                 if data['subagents']:
                     break
                 await asyncio.sleep(.01)
             assert data['running'] == 2 and data['subagents'] == 1
             await pending
-            data = (await api.get('/api/activity')).json()
+            data = Activity(svc.store).summary()
             assert data['running'] == 0 and data['subagents'] == 0
             assert data['averages']['30m'] > 0
+            pet = (await api.get('/api/activity')).json()
+            assert pet['source'] == 'codex_hooks' and pet['available'] is False
+            assert pet['running'] == pet['waiting_on_input'] == 0
             intervals = svc.store.all('SELECT * FROM subagent_activity WHERE run_id IN '
                                       '(SELECT id FROM runs WHERE task_id=?)', (task['id'],))
             assert len(intervals) == 1 and intervals[0]['finished_at'] is not None
