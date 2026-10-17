@@ -400,3 +400,37 @@ No PR, push, merge, deployment, or live external integration write was performed
 Authenticated Claude and live Linear/GitHub webhooks remain unverified. Deploy
 and Done are workflow states; automatic deployment, backup, retention, worktree
 cleanup, and future schema migrations are not implemented.
+
+## Linear evidence uploads — October 17, 2026
+
+The source implementation now snapshots explicitly linked local evidence when
+an ACP comment/review is submitted and uploads it before mirroring the comment.
+Markdown documents become downloadable links; image embeds retain their syntax.
+Desktop and MCP instructions tell agents to report evidence through ACP.
+
+- Original shared-checkout suite: `164 passed` in 31.93 seconds, including
+  unrelated pending comment-threading tests.
+- Isolated attachment-only PR branch: `158 passed` in 34.52 seconds, with one
+  existing Starlette/httpx deprecation warning. The suite required localhost and
+  process permissions; the initial sandbox-only run could not exercise
+  daemon/runner tests.
+- Evidence suite: 22 tests covering snapshots, retries after restart, uncertain
+  comment responses, upload failures, edits, missing/oversized/non-regular files,
+  code examples, escaped links, titled links, and inbound Linear comments.
+- Required Ruff checks, JavaScript syntax check, and `git diff --check` passed.
+- Wheel and source distribution built. The wheel contains `acp/evidence.py` and
+  declares the locked CommonMark parser dependency.
+- Independent review found Markdown parsing issues; regressions reproduced them
+  before fixes. The final focused review reported no remaining findings.
+- Live Linear verification uploaded a 418-byte Markdown report and a 68-byte
+  synthetic PNG fixture after deleting the source files. Authenticated downloads
+  matched the snapshots byte-for-byte. A subsequent Linear GraphQL read confirmed
+  both asset URLs in the [ticket comment](https://linear.app/tryprincipal/issue/TRY-11/update-instructions-and-functionality-to-upload-attachments#comment-abe3c0c9).
+
+The PNG is an upload fixture, not a product screenshot. Live verification used
+the new source uploader with an isolated database and published through the
+active ACP run. The installed running service was not replaced or restarted;
+installing the updated package and restarting it remains necessary for normal
+agent reports to use this behavior. Chat-only attachments and old comments are
+not automatically imported. Existing unrelated comment-threading edits were
+preserved in the shared checkout and excluded from the attachment PR.

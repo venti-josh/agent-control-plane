@@ -140,6 +140,16 @@ class DesktopBridge:
             'after each wait/completion (use completed, interrupted, errored, or waiting_on_input as observed). '
             'Include nested subagents when visible via list_agents; report only this run’s descendants. '
             'Do not infer activity from commentary or create subagents just for tracking. '
+            'Put evidence in ACP comment/review text, not only in the chat reply: '
+            'screenshots as ![description](</absolute/path/screenshot.png>) and '
+            'documents as [description](</absolute/path/report.md>). Use absolute local paths '
+            'with angle brackets, or existing HTTPS links. For a primary file deliverable, '
+            'use --output-url /absolute/path/report.md --kind file. ACP snapshots explicitly '
+            'linked local files and uploads them to the linked Linear issue during comment sync. '
+            'Files must exist and be readable when first submitted (20 MiB per file, '
+            '50 MiB total per comment). Include only intended evidence, never credentials '
+            'or unrelated files. Plain paths, relative links, and chat-only attachments '
+            'are not uploaded. Report actual verification and missing evidence honestly. '
             'After input or review, end your turn for the user to respond.\n')
         return {'task_id': task['id'], 'repo_path': task['repo_path'],
                 'prompt': build_prompt(task, run, connector), 'title': f"ACP: {task['title']}"}

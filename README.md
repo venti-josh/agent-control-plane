@@ -272,6 +272,30 @@ submit_for_review(summary, output_url="", kind="text")
 
 The short reporting contract is in `acp/workflow.md`. ACP does not prescribe planning, implementation, Git, or testing steps. It asks the agent to report a blocking question or its result and actual verification, then end the turn for your response. Desktop prompts use equivalent run-scoped CLI commands instead of MCP instructions.
 
+For a task linked to Linear, include evidence in an ACP comment or review summary:
+
+```markdown
+![Verified screen](</absolute/path/screenshot.png>)
+[Verification report](</absolute/path/report.md>)
+```
+
+ACP saves a copy of each explicitly linked local file in its database, uploads it
+to Linear's private file storage, and replaces the local destination in the mirrored
+comment. Images remain inline and documents become downloadable links. A primary
+`kind="file"` review output is included automatically. `file://` links also work.
+Files must be readable at first submission, with a 20 MiB limit per file and 50 MiB
+per comment. Missing or oversized files reject the report before moving the task
+to review. Only link intended evidence; ACP does not inspect file contents for secrets.
+
+Uploads use the existing delivery retries and reuse successful uploads across
+restarts. Failed uploads remain visible in delivery errors and do not publish a
+comment containing broken local links. Existing HTTP(S) links, code examples, and
+source links ending in `:line` or `#Lline` are preserved. Plain paths, relative links,
+reference-style Markdown, and attachments appearing only in the agent's chat are
+not uploaded. Previously saved comments are not backfilled; resubmit evidence in
+a new comment. Install the updated ACP package and restart its service to enable
+this behavior for the running desktop bridge.
+
 To produce a PR, instruct the task to create/update a GitHub PR and submit its canonical URL with `kind="pr"`. Your local Git and `gh` credentials must already permit that work. ACP itself does not independently create or merge PRs. A subsequent change-request run receives the retained session, task history, and new review feedback.
 
 ### Runtime boundaries
