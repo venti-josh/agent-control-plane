@@ -421,6 +421,8 @@ class Integrations:
                     Store.enqueue(db, "linear.sync", f"linear-wait:{comment['id']}", {"task_id": task["id"]})
             elif command == "/changes" and message.strip() and task["state"] == "ready_for_review":
                 self.service._schedule(db, task["id"], "review", {"comment_id": comment["id"]})
+            else:
+                self.service._route_comment(db, task, comment)
 
     async def github_get(self, path: str, params: dict | None = None) -> dict | list:
         headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}

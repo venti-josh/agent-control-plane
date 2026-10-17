@@ -207,6 +207,51 @@ class DesktopBridge:
             return self.service.submit_for_review(task['id'], text, output_url, kind, run_id)
         raise DomainError('Unknown desktop task action', 422)
 
+    def steering(self, run_id):
+        """Claim one comment for the dispatcher without starting a second run."""
+        with self.store.transaction() as db:
+            task, _ = self._require_active(db, run_id)
+            entry = db.execute('SELECT * FROM desktop_runs WHERE run_id=?', (run_id,)).fetchone()
+            if not entry or entry['phase'] != 'attached' or not entry['thread_id']:
+                raise DomainError('Attach the task chat before checking steering')
+            db.execute("DELETE FROM desktop_inputs WHERE run_id=? AND status='pending' "
+                       "AND comment_id IN (SELECT id FROM comments WHERE deleted=1)", (run_id,))
+            pending = db.execute(
+                "SELECT i.*,c.body,c.author FROM desktop_inputs i JOIN comments c ON c.id=i.comment_id "
+                "WHERE i.run_id=? AND i.status!='delivered' ORDER BY c.created_at,c.rowid LIMIT 1",
+                (run_id,)).fetchone()
+            if not pending:
+                return {'action': 'wait'}
+            if task['state'] != 'in_progress':
+                raise DomainError('Task is no longer accepting steering; reconcile its pending comments')
+            action = 'uncertain' if pending['status'] == 'claimed' else 'send'
+            db.execute("UPDATE desktop_inputs SET status='claimed' WHERE comment_id=?", (pending['comment_id'],))
+            prompt = (
+                f"New human comment on this ACP task (comment {pending['comment_id']}, run {run_id}). "
+                'Incorporate this feedback into the current task now. Keep the same ACP run and chat. '
+                f'First check `{self.command()} action {run_id} get`; if revoked, stop. '
+                'Do not treat this as a new task or create another chat. '
+                'Before requesting input or submitting for review, allow the dispatcher to confirm delivery.\n\n'
+                f"{pending['author']}:\n{pending['body']}")
+            return {'action': action, 'session_id': entry['thread_id'],
+                    'comment_id': pending['comment_id'], 'prompt': prompt}
+
+    def steered(self, run_id, session, comment_id):
+        session = thread_id(session)
+        with self.store.transaction() as db:
+            task, _ = self._require_active(db, run_id)
+            entry = db.execute('SELECT * FROM desktop_runs WHERE run_id=?', (run_id,)).fetchone()
+            delivery = db.execute('SELECT * FROM desktop_inputs WHERE run_id=? AND comment_id=?',
+                                  (run_id, comment_id)).fetchone()
+            if (not entry or entry['phase'] != 'attached' or entry['thread_id'] != session or
+                    not delivery or delivery['status'] == 'pending'):
+                raise DomainError('Delivery does not match a claimed comment and bound chat')
+            if delivery['status'] != 'delivered':
+                db.execute("UPDATE desktop_inputs SET status='delivered' WHERE comment_id=?", (comment_id,))
+                self.service._event(db, 'run.input_delivered', task['id'],
+                                    {'run_id': run_id, 'comment_id': comment_id})
+        return {'delivered': True}
+
     def complete(self, run_id, session, error=''):
         # Completion may acknowledge an already revoked run, but never revive it.
         session = thread_id(session) if session else None
@@ -218,6 +263,12 @@ class DesktopBridge:
                 raise DomainError('Completion does not match the dispatched chat')
             if not session and not error:
                 raise DomainError('An undispatched run requires a failure explanation')
+            run = db.execute('SELECT * FROM runs WHERE id=?', (run_id,)).fetchone()
+            if (not error and run['status'] == 'running' and not run['stop_requested'] and db.execute(
+                    "SELECT 1 FROM desktop_inputs i JOIN comments c ON c.id=i.comment_id "
+                    "WHERE i.run_id=? AND (i.status='claimed' OR (i.status='pending' AND c.deleted=0))",
+                    (run_id,)).fetchone()):
+                raise DomainError('Reconcile pending comments before acknowledging this run')
             db.execute("UPDATE desktop_runs SET phase='complete' WHERE run_id=?", (run_id,))
         self.service.finish_run(run_id, 'failed' if error else 'succeeded', error or None)
         return {'acknowledged': True}
@@ -238,7 +289,19 @@ class DesktopBridge:
                 'The task agent manages its own working directory and any worktree using normal app tools. '
                 'For resume, send the exact prompt to the supplied session using send_message_to_thread. '
                 f'After creation or continuation, run {cmd} bind {run_id} --thread THREAD_ID.\n'
-                'Use wait_threads to wait for that chat to finish; do not interpret commentary as completion. '
+                f'While observing the task, check `{cmd} steering {run_id}` before each wait. '
+                'A send action is a new human comment: the user authorizes forwarding its exact prompt '
+                'to its session_id using send_message_to_thread immediately, even while the chat is active. '
+                f'After a successful send, run `{cmd} steered {run_id} --thread THREAD_ID --comment-id COMMENT_ID`. '
+                'Drain send actions before waiting. An uncertain action means a previous send may have succeeded: '
+                'inspect the target chat for that comment ID and acknowledge only confirmed delivery; '
+                'never blindly resend. If delivery cannot be established, report the problem and reconcile it '
+                'before acknowledging the run. A wait action means no comments are pending. '
+                'Use wait_threads with timeoutMs 10000 and its latest afterCursor, then check steering again; '
+                'do not wait for task completion before delivering new comments. '
+                'If steering is rejected because the run was revoked, stop forwarding comments but keep '
+                'observing the task chat and acknowledge its actual completion as usual. '
+                'Do not interpret commentary as completion. '
                 'If it needs user approval, leave the request for the user and keep waiting. '
                 f'After actual completion run {cmd} acknowledge {run_id} --thread THREAD_ID '
                 '[--error "Actual failure explanation"]. If preparation failed before sending a prompt, acknowledge with --error only. '
