@@ -1,5 +1,41 @@
 # Verification record
 
+## Published v0.1.2 and existing-tool upgrade — 2026-10-17
+
+[Release v0.1.2](https://github.com/venti-josh/agent-control-plane/releases/tag/v0.1.2)
+was published from `d97f0da76b276eb2b85f3f1f46fd42795f9ff331`.
+
+- [Release workflow](https://github.com/venti-josh/agent-control-plane/actions/runs/39051445895)
+  passed macOS/Linux checks, build, installed demo task flow, and publication.
+- [Compatibility matrix](https://github.com/venti-josh/agent-control-plane/actions/runs/39051445904)
+  passed Python 3.11 and 3.14 on macOS/Linux. Local `make check` passed **136 tests**,
+  Ruff, and JavaScript checks; the local installed demo flow also passed.
+- The literal public installer command updated the existing user installation from
+  the local 0.1.1 build to public 0.1.2 after active runs settled and services stopped:
+  `curl -fsSL https://github.com/venti-josh/agent-control-plane/releases/latest/download/install.sh | sh`.
+- Before/after snapshots confirmed identical configuration bytes, all task/run/
+  comment/artifact/desktop-run records, and dispatcher IDs in the main and test
+  boards. The main board retained four tasks and restarted healthy on localhost:8765.
+- The public wheel's checksum matched its published manifest. All **19 packaged
+  ACP files** matched the release source and installed tool byte-for-byte.
+- A Codex app task paused for input before the upgrade and resumed in the same
+  chat afterward. Codex created its own managed worktree and submitted a greeting
+  file for review; independent execution passed both greeting tests.
+- The revision initially timed out before starting because the test and live boards
+  shared a dispatcher occupied by a new live Linear task. The stale claim was
+  rejected without starting duplicate work. A user-approved temporary test
+  dispatcher removed that contention; retry resumed the original task chat
+  (`01a14ac9-0656-7142-90e7-83866fec590d`) and the same worktree successfully.
+- The complete flow reached **Done** after input, answer, implementation, review,
+  and revision: three successful runs and one recorded pre-start timeout. Final
+  independent verification passed **3 greeting tests**. Only the two intended
+  files were added; ACP workspace/branch fields stayed empty and ACP created no
+  worktree directory. The temporary test service was disconnected and stopped;
+  the upgraded main board remains healthy with its original dispatcher.
+
+Evidence: `.acp/release-0.1.2/`, including public release metadata, CI results,
+installer output, data snapshots, and packaged-file comparison.
+
 ## Claude login retry — 2026-10-17
 
 After the user signed into Claude Desktop, a real ACP Claude Code test and a fresh
@@ -46,7 +82,8 @@ desktop execution for ACP.
 
 Evidence: `.acp/agent-workspace-live/report.json`, `greeting-tests.log`, installation
 snapshots, and `.acp/desktop-live/pytest-workspace.log`. This supersedes the earlier
-ACP-owned workspace design below. These changes are not included in a GitHub release yet.
+ACP-owned workspace design below. These changes were subsequently published in
+v0.1.2, verified above.
 
 ## Codex app dispatcher, unpublished local build — 2026-10-17
 
@@ -84,7 +121,8 @@ not a new release. The public GitHub v0.1.1 installer remains unchanged.
 ## Published v0.1.1 and existing-tool upgrade — 2026-10-16
 
 [Release v0.1.1](https://github.com/venti-josh/agent-control-plane/releases/tag/v0.1.1)
-was published from `dbc3ed4dd94a48b2cabea4232276d2927cce4b6e` and is the latest release.
+was published from `dbc3ed4dd94a48b2cabea4232276d2927cce4b6e` and was the latest
+release at verification time.
 
 - [Release workflow](https://github.com/venti-josh/agent-control-plane/actions/runs/38997409955)
   passed macOS/Linux checks, build, installed demo task flow, and publication.
