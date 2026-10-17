@@ -1,12 +1,60 @@
-name: Check
+name: CI and release
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+
+# Let in-flight publication finish when another commit reaches main.
+concurrency:
+  group: main-ci-release
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
+  release-version:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      pending: ${{ steps.release.outputs.pending }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read release version
+        id: version
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import re, runpy, tomllib
+          from pathlib import Path
+          version = tomllib.loads(Path('pyproject.toml').read_text())['project']['version']
+          assert re.fullmatch(r'\d+\.\d+\.\d+', version), 'Version must be X.Y.Z'
+          assert runpy.run_path('acp/__init__.py')['__version__'] == version, 'Version mismatch'
+          print(f'tag=v{version}')
+          PY
+      - name: Check whether this version is already published
+        id: release
+        uses: actions/github-script@v7
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        with:
+          script: |
+            try {
+              const {data} = await github.rest.repos.getReleaseByTag({
+                ...context.repo, tag: process.env.RELEASE_TAG
+              });
+              if (data.draft) {
+                core.setFailed('An unfinished draft exists; inspect and remove it before rerunning.');
+                return;
+              }
+              core.setOutput('pending', 'false');
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              core.setOutput('pending', 'true');
+            }
+
   check:
+    if: github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
       matrix:
@@ -25,3 +73,56 @@ jobs:
           node-version: '22'
       - run: make setup
       - run: make check
+
+  build:
+    needs: [release-version, check]
+    if: needs.release-version.outputs.pending == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: '0.13.1'
+          python-version: '3.14'
+      - run: sh scripts/build-release.sh
+      - run: uv run --locked python scripts/install-smoke.py
+      - name: Preserve the verified Linux assets for publication
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: dist/release/
+          if-no-files-found: error
+
+  publish:
+    needs: [release-version, build]
+    if: github.ref == 'refs/heads/main' && needs.release-version.outputs.pending == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: dist/release/
+      - name: Verify and publish the tested assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release-version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          (cd dist/release && sha256sum --check SHA256SUMS)
+          test "v$(cat dist/release/VERSION)" = "$RELEASE_TAG"
+          # Existing tags must identify the exact commit that passed this run.
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$GITHUB_SHA"
+          fi
+          gh release create "$RELEASE_TAG" dist/release/* \
+            --target "$GITHUB_SHA" --title "$RELEASE_TAG" --generate-notes

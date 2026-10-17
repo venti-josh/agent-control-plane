@@ -120,7 +120,7 @@ Configuration and task data survive reinstall. Use the release installer for upd
 Pin a release by using its URL instead of `latest`:
 
 ```sh
-curl -fsSL https://github.com/venti-josh/agent-control-plane/releases/download/v0.1.2/install.sh | sh
+curl -fsSL https://github.com/venti-josh/agent-control-plane/releases/download/v0.1.3/install.sh | sh
 ```
 
 To uninstall, run `acp stop`, then `uv tool uninstall acp`. If the installer supplied
@@ -165,10 +165,21 @@ locally over HTTP, installs into isolated tool directories, exercises a task thr
 input and review, then checks stop/restart/reinstall persistence. It saves evidence
 under `.acp/install-smoke-*` and stops its service when finished.
 
-After committing and pushing the source, push a matching `vX.Y.Z` tag. The Release
-workflow runs checks and the installed demo flow on macOS and Linux before creating
-a GitHub Release. No package is published to PyPI. Local asset tests do not establish
-that a GitHub release has been published or downloaded successfully.
+Merge the version change into `main`. The **CI and release** workflow runs only on
+pushes to `main`; feature branches, pull requests, and tag pushes do not run CI.
+It checks macOS and Linux with Python 3.11 and 3.14. If `vX.Y.Z` is not already
+published, it builds and smoke-tests the installed demo on both platforms, then
+creates the tag at the tested commit and publishes the exact verified Linux assets.
+Do not create a tag manually. Subsequent pushes with the same published version run
+checks but skip publication. To release again, increase both versions and run
+`uv lock`, then merge into `main`.
+
+Publication is serialized and requires every check and smoke test to pass. API
+errors fail the workflow. Rerun a failed workflow from GitHub Actions; if an upload
+left an unfinished draft, inspect and remove that draft first. Existing tags must
+match the tested commit and are never moved. No package is published to PyPI.
+Local asset tests do not establish that a GitHub release has been published or
+downloaded successfully.
 
 ## What is implemented
 
