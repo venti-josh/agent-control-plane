@@ -1,5 +1,46 @@
 # Verification record
 
+## Native Comet activity overlay — 2026-10-17
+
+Added a native macOS floating panel with the Comet critter above Running/Waiting
+counts and expandable concurrency averages. The borderless translucent square
+supports click-to-toggle, drag-to-move, and a bottom-right resize grip. Content
+scales proportionally; position, mode, visibility, and scale persist. Four moods
+follow observed 30-minute activity; reduced motion freezes animation.
+
+Activity counts track ACP runs and observed subagents, exclude queued agents,
+and count input waits separately. Averages divide observed agent-seconds by the
+full 30-minute, 1-hour, or 3-hour window, including idle time. Codex app descendants
+require cooperative activity reports; this does not count unrelated app chats or
+reconstruct historical subagent activity.
+
+Validation:
+
+- Full local check: **153 passed**, Ruff and three JavaScript syntax checks passed.
+  One existing Starlette HTTPX deprecation warning remains.
+- Browser overlay checks: backend-driven moods, animation/stillness, reduced
+  motion, drag/keyboard controls, toggle/hide, persistence, narrow viewport,
+  and API failure/slow-response recovery passed.
+- Native checks: actual AppKit gestures, square resizing, content scale, saved
+  scale, toggle-then-drag race recovery, restart persistence, singleton,
+  visibility over another app, hide/show, and stop passed. Production-source
+  pixel capture measured transparent corners (alpha 0) and translucent fill
+  (alpha 0.6588). Physical multi-display/Spaces gestures remain manual checks.
+- The isolated manual preview shows every mood using production assets and can
+  drive synthetic activity without model calls. It remains open until Quit.
+- Independent review caught a dropped-layout race after a toggle followed by
+  immediate dragging. Mouse-up resynchronization and a native regression cover it.
+
+With user approval, installed the local wheel and connected Comet to the real
+ACP service. Backed up the database and previous installation, confirmed no
+queued/running agents before the initial service restart, verified task IDs and
+states were unchanged, and passed SQLite integrity_check. Subsequent visual
+updates restarted only the overlay; the agent service stayed running. Served
+assets matched the approved source and live counts matched the activity API.
+Synthetic preview controls are absent from the normal service. No public release
+or merge was performed for this feature.
+
+
 ## Published v0.1.2 and existing-tool upgrade — 2026-10-17
 
 [Release v0.1.2](https://github.com/venti-josh/agent-control-plane/releases/tag/v0.1.2)

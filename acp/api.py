@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__
+from .activity import Activity
 from .config import LABELS, PROVIDERS, STATES, Settings
 from .integrations import Integrations, verify_signature
 from .service import DomainError, TaskService
@@ -36,7 +37,7 @@ class DesktopConnection(Model):
 class DesktopRequest(Model):
     thread_id: str = ''
     repo: str = ''
-    action: Literal['get', 'comment', 'input', 'review'] = 'get'
+    action: Literal['get', 'comment', 'input', 'review', 'activity'] = 'get'
     text: str = Field(default='', max_length=100000)
     output_url: str = ''
     kind: Literal['text', 'file', 'url', 'pr'] = 'text'
@@ -261,6 +262,14 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True,
     @app.get("/api/tasks")
     def tasks():
         return service.list_tasks()
+
+    @app.get("/overlay", include_in_schema=False)
+    def overlay_page():
+        return FileResponse(Path(__file__).parent / "static" / "activity.html")
+
+    @app.get("/api/activity")
+    def activity():
+        return Activity(store).summary()
 
     @app.post("/api/tasks", status_code=201)
     def create_task(body: CreateTask):

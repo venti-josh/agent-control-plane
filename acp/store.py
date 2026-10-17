@@ -63,6 +63,17 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS one_running_per_task ON runs(task_id) WHERE status='running';
 CREATE UNIQUE INDEX IF NOT EXISTS one_queued_per_task ON runs(task_id) WHERE status='queued';
+CREATE TABLE IF NOT EXISTS subagent_activity (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(id),
+    agent_id TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','waiting_on_input')),
+    started_at REAL NOT NULL,
+    finished_at REAL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_subagent
+ON subagent_activity(run_id,agent_id) WHERE finished_at IS NULL;
+CREATE INDEX IF NOT EXISTS subagent_history ON subagent_activity(started_at,finished_at);
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     type TEXT NOT NULL,
@@ -120,6 +131,12 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
             db.executescript(SCHEMA)
+            run_columns = {r['name'] for r in db.execute('PRAGMA table_info(runs)')}
+            if 'activity_finished_at' not in run_columns:
+                db.execute('ALTER TABLE runs ADD COLUMN activity_finished_at REAL')
+            child_columns = {r['name'] for r in db.execute('PRAGMA table_info(subagent_activity)')}
+            if 'state' not in child_columns:
+                db.execute("ALTER TABLE subagent_activity ADD COLUMN state TEXT NOT NULL DEFAULT 'running'")
             columns = {r['name'] for r in db.execute('PRAGMA table_info(tasks)')}
             if 'hidden' not in columns:
                 db.execute('ALTER TABLE tasks ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0')

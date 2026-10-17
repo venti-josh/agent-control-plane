@@ -86,6 +86,12 @@ def main() -> None:
     imp.add_argument('--provider', choices=['codex', 'claude', 'demo'])
     imp.add_argument('--repo')
     imp.add_argument('--question')
+    overlay = sub.add_parser('overlay', help='macOS floating Comet companion above other applications')
+    osub = overlay.add_subparsers(dest='overlay_command', required=True)
+    ostart = osub.add_parser('start')
+    ostart.add_argument('--url', default='', help='Local ACP origin (normally discovered automatically)')
+    for name in ['status', 'show', 'hide', 'toggle', 'reset', 'stop']:
+        osub.add_parser(name)
     desktop = sub.add_parser('desktop', help='Connect and operate the supported Codex app dispatcher')
     desktop.add_argument('--url', help='ACP local service URL')
     ds = desktop.add_subparsers(dest='desktop_command', required=True)
@@ -104,7 +110,7 @@ def main() -> None:
         if name in {'complete', 'acknowledge'}:
             item.add_argument('--error', default='')
         if name == 'action':
-            item.add_argument('action', choices=['get', 'comment', 'input', 'review'])
+            item.add_argument('action', choices=['get', 'comment', 'input', 'review', 'activity'])
             item.add_argument('--text', default='')
             item.add_argument('--output-url', default='')
             item.add_argument('--kind', choices=['text', 'file', 'url', 'pr'], default='text')
@@ -115,6 +121,16 @@ def main() -> None:
             print(json.dumps(daemon.setup(), indent=2))
             return
         settings = Settings.from_env()
+        if args.command == 'overlay':
+            from . import overlay
+            if args.overlay_command == 'start':
+                result = overlay.start(settings, args.url)
+            elif args.overlay_command in {'status', 'stop'}:
+                result = getattr(overlay, args.overlay_command)(settings)
+            else:
+                result = overlay.control(settings, args.overlay_command)
+            print(json.dumps(result, indent=2))
+            return
         if args.command == 'desktop':
             base = args.url or daemon.status(settings).get('url') or settings.base_url
             action = args.desktop_command

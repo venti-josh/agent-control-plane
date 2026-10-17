@@ -141,6 +141,9 @@ class DemoRunner:
 
 class CLIRunner:
     async def run(self, service: TaskService, task: dict, run: dict) -> None:
+        from .activity import Activity
+
+        activity = Activity(service.store)
         settings = service.settings
         executable = settings.claude_command if task["provider"] == "claude" else settings.codex_command
         if not shutil.which(executable):
@@ -201,6 +204,8 @@ class CLIRunner:
                             await process.stdin.drain()
                             process.stdin.close()
                         else:
+                            if channel == 'stdout':
+                                activity.observe(run['id'], task['provider'], event)
                             session, error = parse_event(task["provider"], event)
                             if session:
                                 service.remember_session(run["id"], session)

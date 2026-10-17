@@ -45,6 +45,49 @@ active runs and retains their session references for explicit retry. Agent files
 does not stop tasks. Interactive API documentation is at the reported URL plus
 `/docs`. Choose **Try a demo** to exercise input and review without an agent account.
 
+### Comet’s macOS activity overlay
+
+Run `uv run --locked acp overlay start` with the ACP service running to open the
+native floating macOS panel. It stays above ordinary apps and can follow Spaces.
+Drag anywhere on the square tile to move it; click without dragging to expand or
+minimize it. Drag the small bottom-right grip to resize; the pet and counters
+scale together, and your size is remembered. Both sizes share one translucent,
+borderless surface.
+The comet in the macOS menu bar provides Show, Hide, Reset position, and Quit.
+Position and display preferences are saved locally. Building the panel once
+requires Apple's command line tools (`xcode-select --install`).
+
+To test without touching live agents, run:
+
+```sh
+ACP_OVERLAY_UI=1 ACP_CONFIG_FILE=/dev/null uv run --locked python tests/mac_overlay.py
+```
+
+After native checks pass, open the printed `controls` URL. It shows Dead, Sad,
+Happy, and Rainbow side by side in both tile sizes. The desktop buttons drive
+simulated activity in the native panel within five
+seconds. The preview stays open until **Quit Comet**. Only this test
+server exposes mood controls; the normal overlay always follows actual activity.
+
+The tile shows current running ACP agents, observed subagents, input waits, and
+time-weighted average concurrency over the last 30 minutes, 1 hour, and 3 hours.
+Each average divides observed running agent-seconds by the full window, including
+idle time. Queued/unlaunched runs and agents that have submitted input/review are
+excluded. Counters refresh every five seconds while the tile is visible.
+
+CLI subagents are observed from Codex collaboration and Claude local-agent events.
+Codex app task chats report observed descendant state changes through the bound
+`desktop action RUN_ID activity --text '{"CHILD_ID":"running"}'` action; they must
+also report completion/interruption or a human input wait. App counts depend on
+these cooperative reports. This covers ACP runs, not every chat open in Codex;
+historical subagent activity before tracking was installed cannot be reconstructed.
+No transcript or prompt content is stored in the activity table.
+
+Comet plays dead below a 30-minute average of 1 (X eyes, limp tail, no motion),
+sighs with drooping ears and tears from 1 to below 2, flies happily from 2 to
+below 3, and leaves a rainbow trail at 3 or more. System reduced-motion settings disable
+animation. Failed activity requests show unavailable counters until recovery.
+
 ### Storage and configuration
 
 By default ACP uses `$XDG_DATA_HOME/acp`, or `$HOME/.local/share/acp`:
@@ -272,6 +315,7 @@ The same operations are available through `TaskService` functions and HTTP. Main
 | --- | --- |
 | `POST /api/tasks` | Create a task in Planning or Todo. |
 | `GET /api/tasks` / `GET /api/tasks/{id}` | Board and complete task history. |
+| `GET /api/activity` | Current observed agent counts and time-weighted concurrency averages. |
 | `PATCH /api/tasks/{id}` | Edit context/provider/repository, subject to active-run checks. |
 | `POST /api/tasks/{id}/transition` | Validate and commit a state change. |
 | `POST /api/tasks/{id}/comments` | Comment; optionally reply to a blocker and resume. |
@@ -500,6 +544,7 @@ For optional browser tests:
 uv sync --locked --group browser
 uv run --locked --group browser playwright install chromium
 uv run --locked --group browser python tests/browser_smoke.py
+uv run --locked --group browser python tests/browser_overlay.py
 # Or point to an installed Chromium:
 CHROMIUM_EXECUTABLE=/usr/bin/chromium uv run --locked --group browser python tests/browser_smoke.py
 ```
@@ -516,6 +561,7 @@ which live integrations were exercised.
 | `store.py` | SQLite schema, event log, durable outbox. |
 | `worker.py` | Run scheduling and retryable event delivery. |
 | `runners.py` | Claude/Codex CLI adapters, sessions, launch directories, logs. |
+| `activity.py` | Persisted observed subagent intervals and agent concurrency summaries. |
 | `desktop.py` | Supported Codex app queue, dispatch lifecycle, run-scoped actions. |
 | `mcp_server.py` | Four task tools exposed over stdio. |
 | `integrations.py` | Single-workspace Linear sync and GitHub review events. |
