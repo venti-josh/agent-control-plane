@@ -1,5 +1,33 @@
 # Verification record
 
+## Published v0.1.1 and existing-tool upgrade — 2026-10-16
+
+[Release v0.1.1](https://github.com/venti-josh/agent-control-plane/releases/tag/v0.1.1)
+was published from `dbc3ed4dd94a48b2cabea4232276d2927cce4b6e` and is the latest release.
+
+- [Release workflow](https://github.com/venti-josh/agent-control-plane/actions/runs/38997409955)
+  passed macOS/Linux checks, build, installed demo task flow, and publication.
+- [Python compatibility matrix](https://github.com/venti-josh/agent-control-plane/actions/runs/38997409964)
+  passed Python 3.11 and 3.14 on macOS/Linux. Local `make check` passed 119 tests,
+  Ruff, and JavaScript checks before tagging.
+- The literal public `curl .../releases/latest/download/install.sh | sh` command
+  updated the existing user installation after an idle check and `acp stop`.
+  Configuration and API key bytes were unchanged; all three visible tasks retained
+  their runs, comments, artifacts, session IDs, repositories, and worktrees.
+  ACP restarted healthy on localhost:8765, connected to the same Linear owner.
+- A separate public v0.1.0 installation created a waiting demo task, stopped,
+  upgraded using the latest GitHub command, and resumed the same session through
+  review, revision, and Done. All three runs succeeded; configuration and history
+  survived. This was a simulated agent test, not another live-provider claim.
+- The public wheel matched all 18 installed/source ACP files byte-for-byte.
+  SHA-256: `8eb6a299f9276fc6c8bc73dab0d73bb03b2cba2d07055ffaec897a40bfa7258b`.
+
+Evidence: `.acp/github-existing-update-0.1.1/report.json` and `installer.log`;
+`.acp/github-upgrade-0.1.1/report.json` and per-version installer logs.
+
+v0.1.1 uses CLI execution. App-owned Codex/Claude chats are a subsequent request
+and are not represented as a feature of this release.
+
 ## v0.1.1 pre-release Linear setup and owner sync — 2026-10-16
 
 The checks in this section were performed on the local candidate before publication.
