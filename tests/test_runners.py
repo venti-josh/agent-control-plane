@@ -19,7 +19,7 @@ import pytest
 import uvicorn
 
 from acp.api import create_app
-from acp.runners import CLIRunner, build_command, parse_event, prepare_workspace, stop_process
+from acp.runners import CLIRunner, build_command, parse_event, launch_directory, stop_process
 from acp.worker import Worker
 
 
@@ -61,7 +61,7 @@ def live_api(settings):
 def fake_cli(tmp_path):
     path = tmp_path / 'fake-agent'
     path.write_text(f'#!{sys.executable}\n' + r'''
-import json, os, sys, time
+import json, os, sys, time, subprocess
 from pathlib import Path
 import urllib.request
 args = sys.argv[1:]
@@ -88,7 +88,12 @@ def request(path='', data=None):
         return json.load(r)
 print(json.dumps({'type':'system','session_id':session} if claude else
                  {'type':'thread.started','thread_id':session}), flush=True)
-Path('fake-calls.jsonl').open('a').write(json.dumps({'args':args,'cwd':os.getcwd()})+'\n')
+launch_cwd = os.getcwd()
+chosen = Path(launch_cwd).parent / 'provider-workspace'
+if not chosen.exists():
+    subprocess.run(['git', 'worktree', 'add', '-b', 'provider-owned', str(chosen)], check=True, capture_output=True)
+os.chdir(chosen)
+Path('fake-calls.jsonl').open('a').write(json.dumps({'args':args,'cwd':launch_cwd,'chosen':os.getcwd()})+'\n')
 task = request()
 if '[hang]' in task['description']:
     time.sleep(90)
@@ -119,17 +124,20 @@ async def test_real_process_input_and_review_loop(live_api, git_repo, fake_cli, 
     assert task['state'] == 'waiting_on_input'
     assert task['session_id'] == f'{provider}-retained-session'
     assert task['runs'][0]['status'] == 'succeeded'
-    workspace = task['workspace']
+    workspace = git_repo.parent / 'provider-workspace'
+    assert task['workspace'] is None and task['branch'] is None
+    assert not (svc.settings.data_dir / 'worktrees').exists()
     svc.add_comment(task['id'], 'Use a text file', in_reply_to=task['blocker_comment_id'], resume=True)
     assert await worker.run_once()
     task = svc.get_task(task['id'])
     assert task['state'] == 'ready_for_review'
-    assert task['workspace'] == workspace
+    assert task['workspace'] is None
     assert (Path(workspace) / 'output.txt').is_file()
     assert not (git_repo / 'output.txt').exists()
     calls = [json.loads(line) for line in (Path(workspace)/'fake-calls.jsonl').read_text().splitlines()]
     assert len(calls) == 2
-    assert calls[0]['cwd'] == calls[1]['cwd'] == workspace
+    assert calls[0]['cwd'] == calls[1]['cwd'] == str(git_repo)
+    assert calls[0]['chosen'] == calls[1]['chosen'] == str(workspace)
     assert task['session_id'] in calls[1]['args']
     svc.request_changes(task['id'], 'Improve the output')
     await worker.run_once()
@@ -264,12 +272,26 @@ async def test_missing_executable_explains_failure(service):
 
 async def test_retained_worktree_not_silently_recreated(service, git_repo):
     task = service.create_task('Worktree', repo_path=str(git_repo))
-    path = await prepare_workspace(service, task)
+    path = git_repo.parent / 'legacy-worktree'
+    subprocess.run(['git', 'worktree', 'add', '-b', 'legacy', str(path)], cwd=git_repo,
+                   check=True, capture_output=True)
+    with service.store.transaction() as db:
+        db.execute('UPDATE tasks SET workspace=?,branch=? WHERE id=?', (str(path), 'legacy', task['id']))
     task = service.get_task(task['id'])
-    assert await prepare_workspace(service, task) == path
+    assert launch_directory(task) == path
     path.rename(path.with_name('moved'))
     with pytest.raises(RuntimeError, match='missing'):
-        await prepare_workspace(service, task)
+        launch_directory(task)
+
+
+async def test_new_task_does_not_create_or_record_a_workspace(service, git_repo):
+    task = service.create_task('Agent chooses workspace', provider='codex', repo_path=str(git_repo))
+    before = subprocess.check_output(['git', 'worktree', 'list', '--porcelain'], cwd=git_repo)
+    assert launch_directory(task) == git_repo
+    assert subprocess.check_output(['git', 'worktree', 'list', '--porcelain'], cwd=git_repo) == before
+    task = service.get_task(task['id'])
+    assert task['workspace'] is None and task['branch'] is None
+    assert not (service.settings.data_dir / 'worktrees').exists()
 
 
 def test_explicit_sessions_and_native_mcp_config(settings):

@@ -1,5 +1,86 @@
 # Verification record
 
+## Claude login retry — 2026-10-17
+
+After the user signed into Claude Desktop, a real ACP Claude Code test and a fresh
+standalone CLI request both returned HTTP 401: `OAuth access token has expired`.
+`claude auth status` with normal Keychain access reported a saved Claude login,
+but that status did not establish a valid API session. No token/API-key environment
+override was set. The test made no implementation changes and reported zero model
+usage on the standalone probe. The isolated test service was stopped; the main
+board remained healthy. Refresh the CLI login with `claude auth login` before
+retrying. Evidence: `.acp/claude-live/report.json` and its run log.
+
+This attempted the CLI integration. The documented
+[Claude Desktop deep link](https://support.claude.com/en/articles/14729294-open-claude-desktop-with-a-link)
+prefills a composer for a person to submit; it does not establish automatic
+desktop execution for ACP.
+
+## Agent-owned workspaces and simpler prompts — 2026-10-17
+
+- **136 regression tests passed**, plus Ruff and JavaScript syntax checks. The
+  existing Starlette HTTPX deprecation warning remains.
+- ACP no longer creates branches/worktrees or requires a particular branch.
+  Both CLI adapters start in the selected repository (or an older session's saved
+  directory), leaving workspace decisions to the agent. The desktop task agent
+  uses normal app tools. Task prompts contain context and a short reporting
+  contract, without a planning, implementation, or Git checklist.
+- Real subprocess/HTTP/Git adapter tests exercised input, answer, review, and
+  revision for simulated Codex and Claude executables. The simulated agents chose
+  their own worktree; ACP created no workspace and retained the explicit session.
+  Live Claude execution remains deferred at the user's earlier request.
+- The installed wheel passed a real Codex app flow: input → answer → implementation
+  → review → revision → Done. All three runs succeeded in the same chat,
+  `01a14aa5-7667-74c2-a153-96e6cde6c492`.
+- Codex itself created a managed worktree at
+  `~/.codex/worktrees/agent-workspace-greeting/agent-control-plane` on
+  `codex/agent-workspace-greeting`. ACP's workspace and branch fields remained
+  empty, no `workspace.created` event was emitted, and no ACP worktree directory
+  was created. Revision reused that same agent-owned workspace.
+- Independent execution of the final greeting tests passed **3 tests**; only the
+  two intended files were added in the test worktree. No commits or pushes.
+- All 19 packaged ACP files matched source and the installed tool. Existing board
+  configuration and task records were preserved. The updated form explicitly says
+  that the agent chooses its workspace. The isolated test service was stopped;
+  the connected main board remains on localhost:8765.
+
+Evidence: `.acp/agent-workspace-live/report.json`, `greeting-tests.log`, installation
+snapshots, and `.acp/desktop-live/pytest-workspace.log`. This supersedes the earlier
+ACP-owned workspace design below. These changes are not included in a GitHub release yet.
+
+## Codex app dispatcher, unpublished local build — 2026-10-17
+
+- Final regression suite: **134 passed**, with the existing Starlette HTTPX
+  deprecation warning. Ruff and JavaScript syntax checks passed.
+- Supported `codex queue` woke the connected app dispatcher. Its native app tools
+  created task chats and continued the same chat on answers and revision requests.
+  No private IPC, UI automation, global hooks, or hook trust changes were used.
+- A real greeting task went through input, answer, implementation, review, revision,
+  and Done in one app chat and retained worktree. Three workflow runs succeeded
+  after an initial permission-guidance failure was corrected. Independent execution
+  of the resulting greeting tests passed **2 tests**.
+- A fresh task through the installed wheel began without a repository selection.
+  The dispatcher chose the correct repository, created a new app chat, and observed
+  its read-only review submission and successful completion. The test task was
+  then moved to Done, and the isolated service on port 8877 was stopped.
+- Regression coverage includes duplicate claims, stale callbacks, cancellation,
+  recovery after creation but before binding, resumed preparation failure,
+  transaction-local claim validation, and app-run serialization while other
+  providers can use additional worker slots.
+- The local wheel was installed on the main board at port 8765, connected to the
+  dispatcher. Existing configuration bytes and all four stored tasks, session IDs,
+  runs, comments, and artifacts were preserved. All 19 packaged ACP files matched
+  source and the installed tool byte-for-byte.
+
+Codex must remain open. Each run uses a dispatcher coordination turn, including
+follow-ups. ACP cancellation revokes results; the user must stop the actual turn
+in Codex. Unacknowledged runs block overlapping retries. The app start deadline
+is 120 seconds, bounded by the configured run timeout.
+
+Evidence: `.acp/desktop-live/report.json`, `pytest-final.log`, installation snapshots,
+and retained test worktrees. The tested local build is still labeled 0.1.1 and is
+not a new release. The public GitHub v0.1.1 installer remains unchanged.
+
 ## Published v0.1.1 and existing-tool upgrade — 2026-10-16
 
 [Release v0.1.1](https://github.com/venti-josh/agent-control-plane/releases/tag/v0.1.1)

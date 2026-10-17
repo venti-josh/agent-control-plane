@@ -57,6 +57,7 @@ acp_install_main() (
     "$acp_uv" tool install --python 3.14 --reinstall --constraints "$acp_tmp/constraints.txt" "$acp_tmp/$acp_wheel"
     "$acp_bin_dir/acp" setup
     printf '\nACP %s installed.\nRun: %s/acp start\nThen: %s/acp open\n' "$acp_version" "$acp_bin_dir" "$acp_bin_dir"
+    printf 'To run tasks in the Codex app, open Settings → Codex app and copy the setup prompt.\n'
     case ":$PATH:" in *":$acp_bin_dir:"*) ;; *) printf 'Add %s to PATH to use the short acp command.\n' "$acp_bin_dir" ;; esac
 )
 acp_install_main "$@"

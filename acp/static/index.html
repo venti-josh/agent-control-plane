@@ -16,13 +16,13 @@
     <section class="toolbar"><div><strong>Board</strong><span class="separator"></span><span id="task-count">0 tasks</span><span id="running-count"></span></div><div><button id="demo-btn" class="quiet">Try a demo</button><span id="default-provider" class="chip"></span></div></section>
     <div id="health-warning" role="status" hidden></div>
     <section id="board" class="board" aria-label="Task board"></section>
-    <footer><span>Todo starts a run. Waiting pauses it. Your review drives the next step.</span><span>Local-first · One workspace · No manager agent</span></footer>
+    <footer><span>Todo starts a run. Waiting pauses it. Your review drives the next step.</span><span>Local-first · One workspace</span></footer>
   </main>
   <dialog id="create-dialog" aria-labelledby="create-title"><form id="create-form"><div class="dialog-heading"><h2 id="create-title">New task</h2><button type="button" class="close" data-close="create-dialog" aria-label="Close">×</button></div>
     <label>Title<input name="title" required maxlength="500" placeholder="What should the agent work on?" autofocus></label>
     <label>Description<textarea name="description" rows="5" placeholder="Context, desired outcome, and how to verify it"></textarea></label>
     <div class="form-row"><label>Agent<select name="provider"><option value="demo">Demo (no AI calls)</option><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label><label>Starting lane<select name="state"><option value="planning">Planning</option><option value="todo">Todo — start work</option></select></label></div>
-    <label>Local Git repository<input name="repo_path" placeholder="/absolute/path/to/your/repo"></label><p class="hint">Real agents work in a separate Git worktree. Your current checkout is left alone.</p>
+    <label>Local Git repository<input name="repo_path" placeholder="/absolute/path/to/your/repo"></label><p class="hint">The agent chooses its working directory and whether to use a worktree.</p>
     <button class="primary" type="submit">Create task</button></form>
   </dialog>
   <dialog id="task-dialog" class="task-dialog" aria-labelledby="task-heading"><div class="dialog-heading"><div><p id="task-short-id" class="eyebrow"></p><h2 id="task-heading"></h2></div><button class="close" data-close="task-dialog" aria-label="Close">×</button></div>
@@ -31,9 +31,16 @@
     <details id="edit-details"><summary>Edit task</summary><form id="edit-form"><label>Title<input name="title" required maxlength="500"></label><label>Description<textarea name="description" rows="5"></textarea></label><div class="form-row"><label>Agent<select name="provider"><option value="demo">Demo</option><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label><label>Local repo<input name="repo_path"></label></div><button type="submit">Save changes</button></form></details>
     <section id="output-section"><h3>Outputs</h3><div id="task-outputs"></div></section>
     <section><h3>Conversation</h3><div id="task-comments"></div><form id="comment-form"><label class="sr-only" for="comment-body">Comment or reply</label><textarea id="comment-body" rows="3" required placeholder="Add context or feedback…"></textarea><div class="comment-actions"><button type="submit">Add comment</button><button type="button" id="resume-task" class="primary" hidden>Answer & resume</button><button type="button" id="request-changes" class="primary" hidden>Request changes</button></div></form></section>
-    <details><summary>Runs & session</summary><div id="task-runs"></div><button id="reset-session" class="quiet">Reset agent session</button><p class="hint">Keeps the branch and worktree; the next run gets fresh agent context.</p></details>
+    <details><summary>Runs & session</summary><div id="task-runs"></div><button id="reset-session" class="quiet">Reset agent session</button><p class="hint">Keeps task history and files; the next run gets fresh agent context.</p></details>
   </dialog>
   <dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-heading"><div class="dialog-heading"><h2 id="settings-heading">Settings</h2><button class="close" data-close="settings-dialog" aria-label="Close">×</button></div>
+    <section>
+      <div class="connection-heading"><h3>Codex app</h3><span id="desktop-badge" class="chip">CLI mode</span></div>
+      <p id="desktop-status" class="hint"></p>
+      <button id="desktop-copy" type="button">Copy setup prompt</button>
+      <button id="desktop-disconnect" type="button" class="quiet" hidden>Disconnect</button>
+      <details><summary>Connection details</summary><form id="desktop-connect-form"><label>Dispatcher chat ID<input id="desktop-thread" required placeholder="Chat UUID"></label><button type="submit">Connect</button></form><textarea id="desktop-instructions" readonly rows="5" aria-label="Codex setup prompt"></textarea></details>
+    </section>
     <section class="linear-connection">
       <div class="connection-heading"><h3>Linear</h3><span id="linear-badge" class="chip">Not connected</span></div>
       <p id="linear-status" role="status"></p><p id="linear-error" class="hint" role="alert" hidden></p>

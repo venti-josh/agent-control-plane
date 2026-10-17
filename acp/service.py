@@ -233,6 +233,9 @@ class TaskService:
             if description is not None:
                 values["description"] = description
             if provider is not None or repo_path is not None:
+                if db.execute("SELECT 1 FROM desktop_runs d JOIN runs r ON r.id=d.run_id "
+                              "WHERE r.task_id=? AND d.phase IN ('claimed','attached')", (task_id,)).fetchone():
+                    raise DomainError("A desktop run is still unacknowledged; finish or stop it in Codex first")
                 if db.execute("SELECT 1 FROM runs WHERE task_id=? AND status IN ('running','queued')",
                               (task_id,)).fetchone():
                     raise DomainError("Stop queued/running work before changing its agent or repository")
@@ -327,6 +330,9 @@ class TaskService:
             task = self._task(db, task_id)
             if db.execute("SELECT 1 FROM runs WHERE task_id=? AND status IN ('running','queued')", (task_id,)).fetchone():
                 raise DomainError("Stop work before resetting the session")
+            if db.execute("SELECT 1 FROM desktop_runs d JOIN runs r ON r.id=d.run_id "
+                          "WHERE r.task_id=? AND d.phase IN ('claimed','attached')", (task_id,)).fetchone():
+                raise DomainError("The app run is still unacknowledged. Stop it in Codex and acknowledge completion first.")
             db.execute("UPDATE tasks SET session_id=NULL WHERE id=?", (task_id,))
             self._event(db, "session.reset", task_id, {}, "api")
             return self._task(db, task["id"])
@@ -347,6 +353,9 @@ class TaskService:
             run = row(db.execute("SELECT r.* FROM runs r JOIN tasks t ON t.id=r.task_id WHERE r.status='queued' "
                                  "AND t.hidden=0 AND t.state IN ('todo','waiting_on_input','ready_for_review','in_progress') "
                                  "AND NOT EXISTS(SELECT 1 FROM runs x WHERE x.task_id=r.task_id AND x.status='running') "
+                                 "AND NOT (t.provider='codex' AND EXISTS(SELECT 1 FROM metadata WHERE key='codex_dispatcher') "
+                                 "AND EXISTS(SELECT 1 FROM runs x JOIN tasks y ON y.id=x.task_id "
+                                 "WHERE x.status='running' AND y.provider='codex')) "
                                  "ORDER BY r.created_at LIMIT 1").fetchone())
             if not run:
                 return None

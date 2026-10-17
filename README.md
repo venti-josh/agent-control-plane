@@ -1,6 +1,6 @@
 # ACP
 
-A small, local-first Kanban for **one person**, **Claude Code / Codex**, and optionally **one Linear workspace**. One Python backend, SQLite, and a browser UI with no build step. No accounts, roles, separate manager agent, Redis, or microservices.
+A small, local-first Kanban for **one person**, **Claude Code / Codex**, and optionally **one Linear workspace**. One Python backend, SQLite, and a browser UI with no build step. No accounts, roles, Redis, or microservices.
 
 ## Install
 
@@ -27,7 +27,7 @@ acp start          # Background service; closing the terminal is safe
 acp open           # Open the board in your browser
 acp status         # JSON: running, reachable, healthy, URL, PID, log path
 acp logs           # Last 100 log lines; use --lines 500 for more
-acp stop           # Stop the server and interrupt active agent runs cleanly
+acp stop           # Stop ACP and CLI runs; stop desktop turns in Codex
 ```
 
 `acp start` is idempotent. It binds to localhost port 8765 by default; an occupied
@@ -41,7 +41,7 @@ the last worker error until restart; it does not change which instance receives 
 
 The service keeps running after the terminal closes. It does **not** restart
 automatically after a reboot or crash; run `acp start` again. Stopping interrupts
-active runs and retains their worktrees for explicit retry. Closing a browser tab
+active runs and retains their session references for explicit retry. Agent files stay where the agent created them. Closing a browser tab
 does not stop tasks. Interactive API documentation is at the reported URL plus
 `/docs`. Choose **Try a demo** to exercise input and review without an agent account.
 
@@ -50,7 +50,7 @@ does not stop tasks. Interactive API documentation is at the reported URL plus
 By default ACP uses `$XDG_DATA_HOME/acp`, or `$HOME/.local/share/acp`:
 
 - `config.env`: provider commands, defaults, and optional integration settings.
-- `data/`: SQLite database, task worktrees, run logs and private service metadata.
+- `data/`: SQLite database, run logs and private service metadata.
 - `data/service.log`: server output (`service.log.1` is rotated at startup above 10 MiB).
 
 `acp setup` creates configuration if missing and preserves existing values.
@@ -100,8 +100,7 @@ set `ACP_CONFIG_FILE="$PWD/.env"` before `uv run --locked acp ...`. Without Make
 run `sh scripts/setup.sh`, then
 `ACP_CONFIG_FILE="$PWD/.env" uv run --locked acp serve`.
 To use another supported interpreter, set `UV_PYTHON=3.11` for setup and execution.
-Keep `.env`, `.acp`, and `.venv` out of Git. Real tasks need a Git repository with
-at least one commit; install and authenticate Codex or Claude separately.
+Keep `.env`, `.acp`, and `.venv` out of Git. Real tasks need a local Git repository; install and authenticate Codex or Claude separately.
 
 ### Build and publish a release
 
@@ -135,8 +134,8 @@ that a GitHub release has been published or downloaded successfully.
 | Planning | Define or edit a task. No run starts. |
 | Todo | Atomically queue a run. Remains Todo until a process actually starts. |
 | In Progress | The runner owns this state. The task's own agent plans and implements. |
-| Waiting on Input | A nonempty blocking comment is required in the same database transaction. The agent process stops. |
-| Ready for Review | Output and summary are saved; the process stops. Explicit changes-requested feedback queues another run. |
+| Waiting on Input | A nonempty blocking comment is required in the same database transaction. The agent pauses. |
+| Ready for Review | Output and summary are saved; the agent pauses. Explicit changes-requested feedback queues another run. |
 | Deploy | Deployment handoff. A merged linked PR moves here when the task was awaiting review. |
 | Done | Explicit completion. Nothing is automatically merged, deployed, or marked done. |
 
@@ -144,7 +143,50 @@ The seven lanes are task states, not process states. Runs separately record queu
 
 The UI supports drag-and-drop, a keyboard-accessible lane selector, comments, answer-and-resume, change requests, outputs, run logs, task edits, stop/unqueue, session reset, event subscriptions, and Linear import. State/comment changes publish persisted events; the UI receives server-sent events.
 
-## Use a real agent
+## Run tasks in the Codex app
+
+This feature is available from source and has not yet been released. The public
+v0.1.1 installer still uses CLI execution and ACP-managed worktrees.
+
+Install and sign in to Codex, then open ACP **Settings → Codex app → Copy setup
+prompt**. Paste that prompt into Codex once. The agent creates a dedicated ACP
+dispatcher chat and connects it to this board. You can also get the prompt with:
+
+```sh
+acp desktop instructions
+acp desktop status
+```
+
+Keep the Codex app open. Codex tasks then run automatically in app chats, with the
+same chat resumed for answers and requested revisions. The agent manages its working directory and any worktree. The
+supported `codex queue` command wakes the dispatcher; the dispatcher uses the app's
+thread tools to create/continue task chats and observe completion. It performs a
+small coordination turn for each run, including follow-ups. A connected dispatcher
+coordinates one Codex app run at a time; extra worker slots remain available to
+other providers. No lifecycle hooks,
+private IPC, desktop UI automation, or hook-trust bypass are installed.
+
+The agent chooses a repository from ACP's local catalog when the task has no
+repository. Normal Codex app permissions still apply. A task's In Progress state
+begins only when its app chat calls back, and a run finishes only after the
+dispatcher acknowledges the chat's actual completion. Queue delivery is not
+completion. Existing CLI sessions are not adopted as app-owned chats; the first
+app run gets a new chat with task history and any previously saved workspace path as context.
+
+**Stopping:** stop the active turn in Codex. **Cancel tracking** in ACP revokes the
+run's result permissions; it cannot forcibly interrupt a desktop turn. An
+unacknowledged previous app run blocks overlapping retries, session resets, and
+provider changes until its dispatcher acknowledges completion. After an ACP
+restart, inspect the retained app chat before retrying. If the dispatcher itself
+was interrupted, ask it to reconcile its last run and acknowledge the completed
+or interrupted task chat using the command in its dispatch prompt.
+
+To connect an existing dedicated dispatcher, an agent can run
+`acp desktop connect --thread CHAT_UUID`. Use `acp desktop disconnect` when there
+are no unresolved app runs. Existing app tasks require reconnection or an explicit
+session reset before CLI execution. Claude remains a CLI provider.
+
+## Use a real agent through the CLI
 
 Install and authenticate the **Claude Code CLI** or **Codex CLI** on the same machine and OS user that runs ACP. Verify the CLI works in your terminal first. ACP uses that CLI's authentication; it does not read ChatGPT connector credentials.
 
@@ -157,17 +199,25 @@ DEFAULT_REPO=/absolute/path/to/your/git-repository
 
 Use `codex` instead of `claude` to change the default. Each task can override the agent and repository. Model names are optional: `CLAUDE_MODEL` / `CODEX_MODEL`; otherwise the provider CLI chooses its configured default.
 
-Create a task with acceptance criteria and put it into Todo. On its first real run, ACP creates a branch and worktree from your local repository's **current committed HEAD**. Uncommitted changes, ignored `.env` files, dependencies, and untracked files are **not copied**. Prepare the repository and its setup instructions accordingly.
+Create a task with acceptance criteria and put it into Todo. ACP passes the task,
+comments, outputs, and latest input to the agent. The agent chooses its working
+directory and any worktree using its normal workflow and repository instructions.
+ACP does not create branches, worktrees, or copies of the repository.
 
-```text
-Your existing checkout:   /path/to/repo                   (not checked out by ACP)
-Task branch:             acp/<task-prefix>
-Task worktree:           <data-dir>/worktrees/<task-id>
-Raw provider logs:       <data-dir>/logs/<run-id>.jsonl
-Task state and events:   <data-dir>/board.sqlite3
-```
+CLI agents start in the selected repository. Existing tasks from earlier versions
+start in their saved workspace for session compatibility, without enforcing a
+branch or recreating missing files. Codex app tasks use their app chat's workspace
+and normal app tools. A workspace chosen by the agent can be reported in a progress
+comment or submitted as an output path; ACP does not manage its lifecycle.
 
-The task's session ID and worktree are retained for answers and revisions. Resumption always uses that specific session, never the provider's global “latest session.” If a provider session becomes unavailable, **Reset agent session** preserves the worktree and passes the task history to a fresh session. If a worktree disappears, execution fails visibly rather than silently recreating it and losing work.
+The task's session ID is retained for answers and revisions, never the provider's
+global “latest session.” **Reset agent session** preserves task history and files
+but starts fresh agent context. Record useful output paths on the task so a new
+session can find them. Agent-created files and worktrees are backed up and cleaned
+up through the agent or your normal repository tools.
+
+Raw provider logs are in `<data-dir>/logs/<run-id>.jsonl`; task state and events
+are in `<data-dir>/board.sqlite3`.
 
 The agent gets four task-scoped MCP tools:
 
@@ -178,20 +228,20 @@ request_input(question)
 submit_for_review(summary, output_url="", kind="text")
 ```
 
-Instructions are in `acp/workflow.md`. There is no separate planning or supervisory model call. The task's existing agent inspects context, makes a plan, asks a question when necessary, and submits its work. Terminal tools end the turn; agents should not poll or stay alive awaiting your response.
+The short reporting contract is in `acp/workflow.md`. ACP does not prescribe planning, implementation, Git, or testing steps. It asks the agent to report a blocking question or its result and actual verification, then end the turn for your response. Desktop prompts use equivalent run-scoped CLI commands instead of MCP instructions.
 
-To produce a PR, instruct the task to create/update a GitHub PR and submit its canonical URL with `kind="pr"`. Your local Git and `gh` credentials must already permit that work. ACP itself does not independently create or merge PRs. A subsequent change-request run receives the same branch, retained session, task history, and new review feedback.
+To produce a PR, instruct the task to create/update a GitHub PR and submit its canonical URL with `kind="pr"`. Your local Git and `gh` credentials must already permit that work. ACP itself does not independently create or merge PRs. A subsequent change-request run receives the retained session, task history, and new review feedback.
 
 ### Runtime boundaries
 
-This is a **trusted local development tool**, not a security sandbox. A Git worktree isolates checkouts, not machine access. Claude is allowed its normal file tools, Bash, and the four task tools. Codex uses its workspace-write sandbox with network access and writable Git metadata for its worktree. Review code and instructions in repositories before running an agent against them. Never give this unauthenticated board untrusted users or expose its API publicly.
+This is a **trusted local development tool**, not a security sandbox. A Git worktree isolates checkouts, not machine access. Claude is allowed its normal file tools, Bash, and the four task tools. Codex uses its workspace-write sandbox with network access and writable Git metadata for its launch repository. Review code and instructions in repositories before running an agent against them. Never give this unauthenticated board untrusted users or expose its API publicly.
 
 The Codex adapter explicitly approves only the four task-scoped ACP MCP
 tools so they work in headless mode. Its general approval policy remains `never`;
 commands needing sandbox escalation fail rather than prompting an absent user.
 The installed Codex CLI must support per-tool MCP approval configuration.
 
-By default only one run executes at a time. `MAX_CONCURRENT_RUNS` increases this across tasks; there is still at most one active run per task. `RUN_TIMEOUT_SECONDS` bounds a run (default 30 minutes). Stopping the server or a task terminates its process group. A small non-agent process guard also terminates that group if the owning server dies unexpectedly.
+By default only one run executes at a time. `MAX_CONCURRENT_RUNS` increases this across tasks; there is still at most one active run per task. `RUN_TIMEOUT_SECONDS` bounds a run (default 30 minutes). In CLI mode, stopping the server or a task terminates its process group. A small non-agent process guard also terminates that group if the owning server dies unexpectedly.
 
 ## Headless usage
 
@@ -230,7 +280,7 @@ The same operations are available through `TaskService` functions and HTTP. Main
 | `POST /api/tasks/{id}/request-input` | Atomically save the question and enter Waiting. |
 | `POST /api/tasks/{id}/submit-for-review` | Save output/summary and enter Review. |
 | `POST /api/tasks/{id}/request-changes` | Save feedback and queue a review iteration. |
-| `POST /api/tasks/{id}/cancel` | Unqueue or request process termination. |
+| `POST /api/tasks/{id}/cancel` | Unqueue or cancel the run; stop app turns in Codex. |
 | `POST /api/tasks/{id}/reset-session` | Clear the retained session while idle. |
 | `GET /api/events` / `GET /api/events/stream` | Replayable JSON / live SSE events. |
 | `POST /api/subscriptions` | Register an event webhook. |
@@ -285,7 +335,7 @@ The board owner is discovered from the API key and shown in the app. A different
 user must use a separate ACP data directory; changing keys cannot silently transfer
 board ownership. Existing
 labeled issues are discovered automatically. Unlabeled issues are ignored.
-Removing the label or assigning the issue to someone else stops queued/active work and hides the card; history, sessions,
+Removing the label or assigning the issue to someone else cancels ACP runs and hides the card; stop any active desktop turn in Codex. History, sessions,
 and worktrees remain. Re-adding it restores the same task. Archived issues,
 issues moved outside the selected team, and unmapped statuses (such as Canceled)
 are also removed from the active board. Todo and In Progress queue execution;
@@ -324,8 +374,7 @@ repository or `DEFAULT_REPO` takes precedence.
 The discovery pass receives repository names, paths, and sanitized remote URLs.
 Codex uses a read-only discovery sandbox; Claude has no tools in this pass.
 The selected path must belong to the discovered catalog. Ambiguity asks for input;
-no arbitrary repository is selected. Implementation still happens in the task's
-isolated Git worktree, with the same retained session for revisions.
+no arbitrary repository is selected. The selected agent manages the implementation workspace, with the same retained session for revisions.
 
 ### Agent and CLI setup
 
@@ -414,14 +463,14 @@ Browser / CLI / HTTP        Linear / GitHub webhooks
           |                       |
  Claude/Codex CLI + MCP       Linear / subscribers
           |
- retained session + per-task Git worktree
+ retained session + agent-managed workspace
 ```
 
 The worker starts agents and routes events; it never asks a separate agent to classify comments. The agent reasons about the work. Code validates transitions, records events, queues execution, and fences stale callbacks.
 
 A database uniqueness constraint prevents concurrent live runs on the same task; follow-up inputs coalesce into one pending run. A process lock prevents two app workers against the same database. Do not run Uvicorn with multiple workers or live-reload for this app.
 
-After a restart, interrupted runs become Waiting on Input with an explanation. Queued work is retained. Interrupted code-writing runs do **not** automatically retry: inspect the retained branch, then move to Todo or answer the blocker. Delivery jobs, unlike agent runs, are safe to retry with stable deduplication IDs.
+After a restart, interrupted runs become Waiting on Input with an explanation. Queued work is retained. Interrupted code-writing runs do **not** automatically retry: inspect the agent chat and files, then move to Todo or answer the blocker. Delivery jobs, unlike agent runs, are safe to retry with stable deduplication IDs.
 
 Back up the data directory with the server stopped (SQLite WAL files matter for live copies), plus any worktrees and provider session storage you need. Secrets are not included in this source package; runtime `.env` files, database contents, logs, and code outputs can contain sensitive information. No automatic backup, migrations between future schema versions, worktree cleanup, or multi-host execution is included.
 
@@ -467,12 +516,13 @@ which live integrations were exercised.
 | `service.py` | Task/comment/state functions and atomic workflow rules. |
 | `store.py` | SQLite schema, event log, durable outbox. |
 | `worker.py` | Run scheduling and retryable event delivery. |
-| `runners.py` | Claude/Codex CLI adapters, sessions, worktrees, logs. |
+| `runners.py` | Claude/Codex CLI adapters, sessions, launch directories, logs. |
+| `desktop.py` | Supported Codex app queue, dispatch lifecycle, run-scoped actions. |
 | `mcp_server.py` | Four task tools exposed over stdio. |
 | `integrations.py` | Single-workspace Linear sync and GitHub review events. |
 | `api.py` | HTTP API, SSE, UI, signed webhook listener. |
 | `static/` | Plain HTML/CSS/JavaScript UI. |
-| `workflow.md` | Task-agent instructions, including its planning step. |
+| `workflow.md` | Short task reporting contract for CLI agents. |
 
 ## Official references used
 

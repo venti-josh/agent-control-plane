@@ -9,6 +9,7 @@ import httpx
 
 from .integrations import Integrations
 from .runners import CLIRunner, DemoRunner
+from .desktop import DesktopRunner
 from .service import TaskService
 from .store import row
 
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 class Worker:
     def __init__(self, service: TaskService, runners: dict | None = None):
         self.service, self.settings = service, service.settings
-        self.runners = runners or {"claude": CLIRunner(), "codex": CLIRunner(), "demo": DemoRunner()}
+        self.runners = runners or {"claude": CLIRunner(), "codex": DesktopRunner(), "demo": DemoRunner()}
         self.tasks: list[asyncio.Task] = []
         self.lock = None
         self.last_error: str | None = None

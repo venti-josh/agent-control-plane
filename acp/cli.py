@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import webbrowser
 from collections import deque
@@ -85,6 +86,28 @@ def main() -> None:
     imp.add_argument('--provider', choices=['codex', 'claude', 'demo'])
     imp.add_argument('--repo')
     imp.add_argument('--question')
+    desktop = sub.add_parser('desktop', help='Connect and operate the supported Codex app dispatcher')
+    desktop.add_argument('--url', help='ACP local service URL')
+    ds = desktop.add_subparsers(dest='desktop_command', required=True)
+    ds.add_parser('status')
+    ds.add_parser('instructions')
+    ds.add_parser('disconnect')
+    connect = ds.add_parser('connect')
+    connect.add_argument('--thread', required=True)
+    for name in ('claim', 'prepare', 'bind', 'started', 'complete', 'acknowledge', 'action'):
+        item = ds.add_parser(name)
+        item.add_argument('run_id')
+        if name in ('bind', 'started', 'complete', 'acknowledge', 'action'):
+            item.add_argument('--thread', default=None)
+        if name == 'prepare':
+            item.add_argument('--repo', default='')
+        if name in {'complete', 'acknowledge'}:
+            item.add_argument('--error', default='')
+        if name == 'action':
+            item.add_argument('action', choices=['get', 'comment', 'input', 'review'])
+            item.add_argument('--text', default='')
+            item.add_argument('--output-url', default='')
+            item.add_argument('--kind', choices=['text', 'file', 'url', 'pr'], default='text')
     args = parser.parse_args()
     try:
         from . import daemon
@@ -92,6 +115,30 @@ def main() -> None:
             print(json.dumps(daemon.setup(), indent=2))
             return
         settings = Settings.from_env()
+        if args.command == 'desktop':
+            base = args.url or daemon.status(settings).get('url') or settings.base_url
+            action = args.desktop_command
+            if action in {'status', 'instructions'}:
+                result = request(base, 'GET', '/api/desktop')
+                print(result['instructions'] if action == 'instructions' else json.dumps(result, indent=2))
+                return
+            if action in {'connect', 'disconnect'}:
+                result = request(base, 'POST', '/api/desktop/connection',
+                                 {'thread_id': args.thread if action == 'connect' else None})
+            else:
+                payload = {}
+                if action in {'bind', 'started', 'action', 'complete', 'acknowledge'}:
+                    payload['thread_id'] = args.thread or (os.getenv('CODEX_THREAD_ID', '')
+                                                          if action in {'started', 'action'} else '')
+                if action == 'prepare':
+                    payload['repo'] = args.repo
+                if action in {'complete', 'acknowledge'}:
+                    payload['error'] = args.error
+                if action == 'action':
+                    payload.update(action=args.action, text=args.text, output_url=args.output_url, kind=args.kind)
+                result = request(base, 'POST', f'/api/desktop/runs/{args.run_id}/{action}', payload)
+            print(json.dumps(result, indent=2))
+            return
         if args.command in {"start", "stop", "status", "open", "logs"}:
             if args.command == "start":
                 result = daemon.start(settings, args.port)

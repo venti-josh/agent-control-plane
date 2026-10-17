@@ -82,7 +82,8 @@ def wait_for(task_id, state, runs):
 
 
 def verify_output(task, trim=False):
-    workspace = Path(task['workspace'])
+    output = next(a['url'] for a in reversed(task['artifacts']) if a['kind'] == 'file')
+    workspace = Path(output).parent
     run = subprocess.run([sys.executable, '-m', 'unittest', '-v'], cwd=workspace,
                          capture_output=True, text=True, timeout=30)
     assert run.returncode == 0, run.stdout + run.stderr
@@ -126,7 +127,8 @@ try:
             subprocess.run(['git', *argv], cwd=source, check=True, capture_output=True)
         extra = ['--repo', str(source)]
         description = '''This is an authorized end-to-end verification task in a disposable repository.
-Use only this task worktree, task MCP tools, shell/file tools, and Python standard library.
+Choose your workspace within this disposable repository using your normal workflow.
+Use task MCP tools, shell/file tools, and Python standard library.
 Do not delegate, push, deploy, create PRs, install dependencies, or access other projects.
 The design below is already approved. First call get_task and add_comment with a brief plan.
 On the FIRST run, before editing, use request_input to ask exactly:
@@ -149,11 +151,9 @@ If changes are requested, update the SAME files/tests, rerun unittest, and resub
     task = wait_for(task_id, 'ready_for_review', 3)
     if args.live:
         verify_output(task, trim=True)
-        for key in ('session', 'workspace', 'branch'):
-            assert len({stage[key] for stage in report['stages']}) == 1
-            assert report['stages'][0][key]
-        assert subprocess.run(['git', 'status', '--porcelain'], cwd=source,
-                              capture_output=True, text=True, check=True).stdout == ''
+        assert len({stage['session'] for stage in report['stages']}) == 1
+        assert report['stages'][0]['session']
+        assert not (base / 'home/data/worktrees').exists()
     cli('move', task_id, 'done')
     with httpx.stream('GET', info['url'] + '/api/events/stream', timeout=20, trust_env=False) as stream:
         assert stream.status_code == 200

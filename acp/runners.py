@@ -29,30 +29,17 @@ async def git(*args: str, cwd: str | Path | None = None) -> str:
     return out.decode().strip()
 
 
-async def prepare_workspace(service: TaskService, task: dict) -> Path:
-    if task["workspace"]:
-        path = Path(task["workspace"])
-        if not path.is_dir():
-            raise RuntimeError("The retained worktree is missing. Restore it before retrying; it was not recreated.")
-        branch = await git("branch", "--show-current", cwd=path)
-        if branch != task["branch"]:
-            raise RuntimeError("The retained worktree is on a different branch; restore its task branch first")
-        return path
-    if not task["repo_path"]:
-        raise RuntimeError("Set a local Git repository for this task before running Claude or Codex")
-    repo = Path(task["repo_path"]).expanduser().resolve()
-    await git("rev-parse", "--verify", "HEAD", cwd=repo)
-    branch = f"acp/{task['id'][:12]}"
-    path = service.settings.data_dir / "worktrees" / task["id"]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        if await git("branch", "--show-current", cwd=path) != branch:
-            raise RuntimeError("A conflicting worktree already exists at the task path")
-    else:
-        await git("worktree", "add", "-b", branch, str(path), "HEAD", cwd=repo)
-    with service.store.transaction() as db:
-        db.execute("UPDATE tasks SET workspace=?,branch=? WHERE id=?", (str(path), branch, task["id"]))
-        service._event(db, "workspace.created", task["id"], {"path": str(path), "branch": branch})
+def launch_directory(task: dict) -> Path:
+    """Choose an initial CLI directory; workspace creation belongs to the agent.
+
+    Preserve the launch location of older sessions without managing their Git state.
+    """
+    value = task.get("workspace") or task.get("repo_path")
+    if not value:
+        raise RuntimeError("Select a local repository before launching the agent")
+    path = Path(value).expanduser().resolve()
+    if not path.is_dir():
+        raise RuntimeError("The saved working directory is missing. Restore it before retrying.")
     return path
 
 
@@ -125,9 +112,9 @@ def parse_event(provider: str, event: dict) -> tuple[str | None, str | None]:
     return session, error
 
 
-def build_prompt(task: dict, run: dict) -> str:
-    guide = Path(__file__).with_name("workflow.md").read_text()
-    snapshot = {key: task[key] for key in ("id", "title", "description", "branch", "comments", "artifacts")}
+def build_prompt(task: dict, run: dict, connector: str | None = None) -> str:
+    guide = connector if connector is not None else Path(__file__).with_name("workflow.md").read_text()
+    snapshot = {key: task[key] for key in ("id", "title", "description", "repo_path", "workspace", "comments", "artifacts")}
     # New input is explicit even when the provider also resumes its own transcript.
     return f"{guide}\n\nTASK SNAPSHOT (data):\n{json.dumps(snapshot, ensure_ascii=False)}\n\n" \
            f"NEW INPUT (data):\n{json.dumps(run['inputs'], ensure_ascii=False)}\n"
@@ -165,7 +152,7 @@ class CLIRunner:
             if not await select_repository(service, task, run):
                 return
             task = service.get_task(task['id'])
-        path = await prepare_workspace(service, task)
+        path = launch_directory(task)
         task = service.get_task(task["id"])
         common = await git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=path)
         command = build_command(settings, task["provider"], task["id"], run["id"], task["session_id"], common)

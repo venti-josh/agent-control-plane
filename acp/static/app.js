@@ -72,13 +72,14 @@ function drawTask() {
     ? laneSelect.value : task.state;
   laneSelect.innerHTML = config.states.map(s => `<option value="${s.id}" ${s.id === chosenLane ? 'selected' : ''} ${s.id === 'in_progress' ? 'disabled' : ''}>${s.label}</option>`).join('');
   laneSelect.dataset.task = task.id; laneSelect.dataset.state = task.state;
+  $('cancel-task').textContent = selected.provider === 'codex' && config.codex_desktop ? 'Cancel tracking (stop in Codex)' : 'Stop / unqueue';
   $('cancel-task').disabled = !task.runs.some(r => ['queued','running'].includes(r.status));
   $('output-section').hidden = !task.artifacts.length;
   $('task-outputs').innerHTML = task.artifacts.map(a => `<div class="output"><span class="chip">${esc(a.kind)}</span> ${a.kind === 'text' ? '' : safeLink(a.url)}<p>${esc(a.summary)}</p></div>`).join('');
   $('task-comments').innerHTML = task.comments.map(c => `<div class="comment"><div class="comment-author"><strong>${esc(c.author)}${c.in_reply_to ? ' · reply' : ''}</strong><span>${time(c.created_at)}</span></div><div class="comment-body">${esc(c.body)}</div></div>`).join('') || '<p class="hint">Plans, questions, and feedback appear here.</p>';
   $('resume-task').hidden = task.state !== 'waiting_on_input';
   $('request-changes').hidden = task.state !== 'ready_for_review';
-  $('task-runs').innerHTML = `<p class="hint">Session: ${esc(task.session_id || 'Not started')}<br>Worktree: ${esc(task.workspace || 'Created on the first real run')}</p>` + task.runs.map(r => `<div class="run"><span class="run-status ${esc(r.status)}">${esc(r.status)}</span><code>${r.id.slice(0,8)}</code><span>${esc(r.trigger)}</span><a href="/api/runs/${r.id}/log" target="_blank" rel="noopener">View log ↗</a></div>`).join('');
+  $('task-runs').innerHTML = `<p class="hint">Session: ${esc(task.session_id || 'Not started')}<br>Workspace: ${esc(task.workspace || 'Managed by the agent')}</p>` + task.runs.map(r => `<div class="run"><span class="run-status ${esc(r.status)}">${esc(r.status)}</span><code>${r.id.slice(0,8)}</code><span>${esc(r.trigger)}</span><a href="/api/runs/${r.id}/log" target="_blank" rel="noopener">View log ↗</a></div>`).join('');
 }
 async function postComment(mode) {
   if (!selected) return;
@@ -128,7 +129,19 @@ async function linearBusy(id, work) {
   $(id).disabled = true;
   try { await work(); } finally { $(id).disabled = false; }
 }
+async function updateDesktopStatus() {
+  const state = await api('/desktop');
+  config.codex_desktop = state.connected;
+  $('desktop-badge').textContent = state.connected ? 'Connected' : 'CLI mode';
+  $('desktop-status').textContent = state.connected
+    ? 'Tasks run in Codex app chats. Keep Codex open. Stop an active app turn in Codex; cancelling here revokes its ACP results.'
+    : 'Paste the setup prompt into Codex once. It connects a dispatcher chat that creates and continues task chats automatically.';
+  $('desktop-thread').value = state.thread_id || '';
+  $('desktop-instructions').value = state.instructions;
+  $('desktop-disconnect').hidden = !state.connected;
+}
 async function showSettings() {
+  await updateDesktopStatus();
   await updateLinearStatus();
   const [subs, deliveries] = await Promise.all([api('/subscriptions'),api('/deliveries?status=failed')]);
   $('subscription-list').innerHTML = subs.map(s => `<div class="subscription"><button data-unsubscribe="${s.id}">Remove</button>${esc(s.url)}<br><code>${esc(s.types.join(', '))}</code></div>`).join('') || '<p class="hint">No outgoing subscriptions.</p>';
@@ -174,6 +187,9 @@ async function init() {
   $('request-changes').onclick = attempt(() => postComment('changes'));
   $('reset-session').onclick = attempt(async () => { await api(`/tasks/${selected.id}/reset-session`,'POST'); await refresh(); });
   $('settings-btn').onclick = attempt(showSettings);
+  $('desktop-copy').onclick = attempt(async () => { await navigator.clipboard.writeText($('desktop-instructions').value); toast('Paste this prompt into Codex to connect ACP.'); });
+  $('desktop-connect-form').onsubmit = attempt(async () => { await api('/desktop/connection','POST',{thread_id:$('desktop-thread').value.trim()}); await updateDesktopStatus(); });
+  $('desktop-disconnect').onclick = attempt(async () => { await api('/desktop/connection','POST',{thread_id:null}); await updateDesktopStatus(); });
   $('health-warning').onclick = attempt(showSettings);
   $('subscription-form').onsubmit = attempt(async () => {
     const data = Object.fromEntries(new FormData($('subscription-form'))); data.types = data.types.split(',').map(t => t.trim()).filter(Boolean);

@@ -97,6 +97,11 @@ CREATE TABLE IF NOT EXISTS receipts (
     created_at REAL NOT NULL,
     PRIMARY KEY(source,id)
 );
+CREATE TABLE IF NOT EXISTS desktop_runs (
+    run_id TEXT PRIMARY KEY REFERENCES runs(id),
+    phase TEXT NOT NULL CHECK(phase IN ('dispatched','claimed','attached','complete')),
+    thread_id TEXT
+);
 CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 

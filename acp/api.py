@@ -29,6 +29,20 @@ class Model(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class DesktopConnection(Model):
+    thread_id: str | None = None
+
+
+class DesktopRequest(Model):
+    thread_id: str = ''
+    repo: str = ''
+    action: Literal['get', 'comment', 'input', 'review'] = 'get'
+    text: str = Field(default='', max_length=100000)
+    output_url: str = ''
+    kind: Literal['text', 'file', 'url', 'pr'] = 'text'
+    error: str = Field(default='', max_length=5000)
+
+
 class CreateTask(Model):
     title: str = Field(min_length=1, max_length=500)
     description: str = Field(default="", max_length=100000)
@@ -204,6 +218,31 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True,
     if hooks_only:
         return app
 
+    from .desktop import DesktopBridge
+    desktop = DesktopBridge(service)
+
+    @app.get('/api/desktop')
+    def desktop_status():
+        return desktop.status()
+
+    @app.post('/api/desktop/connection')
+    def desktop_connect(data: DesktopConnection):
+        return desktop.connect(data.thread_id)
+
+    @app.post('/api/desktop/runs/{run_id}/{operation}')
+    async def desktop_run(run_id: str, operation: str, data: DesktopRequest):
+        if operation == 'claim':
+            return await asyncio.to_thread(desktop.claim, run_id)
+        if operation == 'prepare':
+            return await desktop.prepare(run_id, data.repo)
+        if operation in {'bind', 'started'}:
+            return getattr(desktop, operation)(run_id, data.thread_id)
+        if operation in {'complete', 'acknowledge'}:
+            return desktop.complete(run_id, data.thread_id, data.error)
+        if operation == 'action':
+            return desktop.action(run_id, data.thread_id, data.action, data.text, data.output_url, data.kind)
+        raise DomainError('Unknown desktop operation', 404)
+
     @app.get("/api/health")
     def health():
         failed = store.one("SELECT count(*) n FROM outbox WHERE status='failed'")["n"]
@@ -217,7 +256,7 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True,
                 "providers": list(PROVIDERS), "default_provider": settings.default_provider,
                 "default_repo": settings.default_repo, "linear_enabled": settings.linear_enabled,
                 "linear_user_name": linear_saved.get('user_name', ''),
-                "github_enabled": bool(settings.github_webhook_secret)}
+                "github_enabled": bool(settings.github_webhook_secret), "codex_desktop": desktop.status()["connected"]}
 
     @app.get("/api/tasks")
     def tasks():
