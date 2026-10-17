@@ -293,6 +293,13 @@ comments, outputs, and latest input to the agent. The agent chooses its working
 directory and any worktree using its normal workflow and repository instructions.
 ACP does not create branches, worktrees, or copies of the repository.
 
+For tasks linked to Linear, the agent prompt includes the issue URL and asks the
+agent to include its issue identifier in new branch names, for example
+`codex/eng-42-short-description`. Repository and user naming conventions still
+apply. Existing branches and PRs keep their names, and tasks without a Linear
+identifier use the agent's normal naming. This supports PR linking through
+[Linear's GitHub integration](https://linear.app/integrations/github).
+
 CLI agents start in the selected repository. Existing tasks from earlier versions
 start in their saved workspace for session compatibility, without enforcing a
 branch or recreating missing files. Codex app tasks use their app chat's workspace

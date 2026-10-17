@@ -115,6 +115,15 @@ def parse_event(provider: str, event: dict) -> tuple[str | None, str | None]:
 def build_prompt(task: dict, run: dict, connector: str | None = None) -> str:
     guide = connector if connector is not None else Path(__file__).with_name("workflow.md").read_text()
     snapshot = {key: task[key] for key in ("id", "title", "description", "repo_path", "workspace", "comments", "artifacts")}
+    snapshot["linear_url"] = task.get("linear_url")
+    guide += (
+        '\n\nWhen creating a branch for a task linked to Linear, include the issue identifier '
+        'from the task snapshot\'s linear_url (for example, ENG-42) in the branch name so '
+        'Linear can link the pull request. Keep the prefix and naming conventions required '
+        'by the repository or user (for example, codex/eng-42-short-description). '
+        'If no Linear identifier is available, use your normal branch naming; do not invent one. '
+        'When continuing an existing branch or PR, keep it rather than renaming it solely for this convention.'
+    )
     # New input is explicit even when the provider also resumes its own transcript.
     return f"{guide}\n\nTASK SNAPSHOT (data):\n{json.dumps(snapshot, ensure_ascii=False)}\n\n" \
            f"NEW INPUT (data):\n{json.dumps(run['inputs'], ensure_ascii=False)}\n"
