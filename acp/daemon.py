@@ -1,0 +1,190 @@
+"""User-owned detached service. Control is authenticated; PIDs are informational."""
+from __future__ import annotations
+
+import fcntl
+import json
+import os
+import secrets
+import socket
+import subprocess
+import sys
+import time
+from contextlib import contextmanager
+from pathlib import Path
+from urllib.parse import urlparse
+
+import httpx
+import uvicorn
+from fastapi import HTTPException, Request
+
+from .config import Settings, config_path
+
+
+class ACPServer(uvicorn.Server):
+    async def shutdown(self, sockets=None):
+        # End EventSource responses before Uvicorn waits for connections to drain.
+        self.config.app.state.stopping = True
+        await super().shutdown(sockets)
+
+
+def setup() -> dict:
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        with open(path, 'x', opener=lambda p, flags: os.open(p, flags, 0o600)) as file:
+            file.write('# ACP user configuration. Environment variables override these values.\n'
+                       'DEFAULT_PROVIDER=demo\nDEFAULT_REPO=\n'
+                       'ACP_URL=http://127.0.0.1:8765\n'
+                       'CLAUDE_COMMAND=claude\nCODEX_COMMAND=codex\n')
+    except FileExistsError:
+        pass
+    settings = Settings.from_env()
+    return {'config': str(path), 'data': str(settings.data_dir)}
+
+
+@contextmanager
+def service_lock(settings):
+    with (settings.data_dir / 'service.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+
+
+def locked(settings) -> bool:
+    try:
+        with service_lock(settings):
+            return False
+    except BlockingIOError:
+        return True
+
+
+def metadata(settings) -> dict:
+    try:
+        value = json.loads((settings.data_dir / 'service.json').read_text())
+        url = urlparse(value['url'])
+        if url.scheme != 'http' or url.hostname != '127.0.0.1' or not url.port or url.path:
+            return {}
+        if not isinstance(value['token'], str) or not isinstance(value['pid'], int):
+            return {}
+        return value
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+
+
+def control(info, method='GET', action='status'):
+    with httpx.Client(timeout=2, trust_env=False) as client:
+        response = client.request(method, info['url'] + '/_acp/' + action,
+                                  headers={'Authorization': 'Bearer ' + info['token']})
+        response.raise_for_status()
+        return response.json()
+
+
+def status(settings) -> dict:
+    running = locked(settings)
+    result = {'running': running, 'reachable': False, 'healthy': False, 'log': str(settings.data_dir / 'service.log')}
+    info = metadata(settings)
+    if running and info:
+        result.update(pid=info['pid'], url=info['url'])
+        try:
+            health = control(info)
+            result['reachable'] = True
+            result['healthy'] = bool(health['worker_running']) and health['worker_error'] is None
+            result['worker_error'] = health['worker_error']
+        except (httpx.HTTPError, ValueError, KeyError):
+            pass
+    return result
+
+
+def start(settings, port=None) -> dict:
+    current = status(settings)
+    if current['reachable']:
+        return current
+    process = None
+    if not current['running']:
+        url = urlparse(settings.base_url)
+        if url.scheme != 'http' or url.hostname != '127.0.0.1':
+            raise ValueError('Background service ACP_URL must use http://127.0.0.1:<port>')
+        port = port if port is not None else (url.port or 8765)
+        if not 0 <= port <= 65535:
+            raise ValueError('Port must be between 0 and 65535')
+        env = {**os.environ, 'ACP_CONFIG_FILE': str(config_path()),
+               'ACP_DATA_DIR': str(settings.data_dir)}
+        log_path = settings.data_dir / 'service.log'
+        # Rotate between starts to keep logs bounded without truncating a running writer.
+        if log_path.exists() and log_path.stat().st_size > 10 * 1024 * 1024:
+            log_path.replace(log_path.with_suffix('.log.1'))
+        with open(log_path, 'ab', opener=lambda p, flags: os.open(p, flags, 0o600)) as log:
+            process = subprocess.Popen([sys.executable, '-I', '-m', 'acp.daemon', str(port)],
+                                       stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                                       cwd=settings.data_dir, env=env, start_new_session=True,
+                                       close_fds=True)
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        current = status(settings)
+        if current['healthy']:
+            return current
+        if process and process.poll() is not None and not current['running']:
+            break
+        time.sleep(.1)
+    raise RuntimeError(f'ACP did not become ready. Inspect {settings.data_dir / "service.log"}')
+
+
+def stop(settings) -> dict:
+    if not locked(settings):
+        return {'running': False, 'healthy': False}
+    info = metadata(settings)
+    if not info:
+        raise RuntimeError('Service is starting or metadata is missing; retry stop shortly.')
+    try:
+        control(info, 'POST', 'stop')
+    except (httpx.HTTPError, ValueError) as exc:
+        raise RuntimeError('Service control is unavailable. Inspect service.log; no PID was signalled.') from exc
+    deadline = time.monotonic() + 20
+    while locked(settings):
+        if time.monotonic() >= deadline:
+            raise RuntimeError('Service is still shutting down. Inspect service.log and retry status.')
+        time.sleep(.1)
+    return {'running': False, 'healthy': False}
+
+
+def server_main(port: int):
+    from .api import create_app
+
+    settings = Settings.from_env()
+    os.umask(0o077)
+    with service_lock(settings), socket.socket() as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(('127.0.0.1', port))
+        settings.base_url = f'http://127.0.0.1:{sock.getsockname()[1]}'
+        token = secrets.token_urlsafe(32)
+        app = create_app(settings)
+        server = ACPServer(uvicorn.Config(app, log_level='info', timeout_graceful_shutdown=3))
+
+        def authorize(request):
+            if not secrets.compare_digest(request.headers.get('authorization', ''), 'Bearer ' + token):
+                raise HTTPException(403, 'Invalid service control token')
+
+        @app.get('/_acp/status', include_in_schema=False)
+        def service_status(request: Request):
+            authorize(request)
+            return {'worker_running': bool(app.state.worker.tasks),
+                    'worker_error': app.state.worker.last_error}
+
+        @app.post('/_acp/stop', include_in_schema=False)
+        def service_stop(request: Request):
+            authorize(request)
+            server.should_exit = True
+            return {'stopping': True}
+
+        path = settings.data_dir / 'service.json'
+        temp = path.with_suffix('.tmp')
+        temp.write_text(json.dumps({'url': settings.base_url, 'pid': os.getpid(), 'token': token}))
+        temp.chmod(0o600)
+        temp.replace(path)
+        try:
+            server.run(sockets=[sock])
+        finally:
+            path.unlink(missing_ok=True)
+
+
+if __name__ == '__main__':
+    server_main(int(sys.argv[1]))

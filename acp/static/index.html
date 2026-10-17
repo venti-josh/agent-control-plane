@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ACP — Personal agent orchestration</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="ACP home"><span class="brandmark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>acp<span class="personal">PERSONAL</span></a>
+    <div class="topright"><span id="connection" class="connection">Connecting</span><button id="settings-btn" class="quiet">Integrations & events</button><a href="/docs" target="_blank" rel="noopener">API docs</a></div>
+  </header>
+  <main>
+    <section class="heading"><div><p class="eyebrow">YOUR LOCAL CONTROL PLANE</p><h1>Work, with an agent.</h1><p class="subtitle">Plan the task. Queue the work. Review the result.</p></div><button id="new-task" class="primary">+ New task</button></section>
+    <section class="toolbar"><div><strong>Board</strong><span class="separator"></span><span id="task-count">0 tasks</span><span id="running-count"></span></div><div><button id="demo-btn" class="quiet">Try a demo</button><span id="default-provider" class="chip"></span></div></section>
+    <div id="health-warning" role="status" hidden></div>
+    <section id="board" class="board" aria-label="Task board"></section>
+    <footer><span>Todo starts a run. Waiting pauses it. Your review drives the next step.</span><span>Local-first · One workspace · No manager agent</span></footer>
+  </main>
+  <dialog id="create-dialog" aria-labelledby="create-title"><form id="create-form"><div class="dialog-heading"><h2 id="create-title">New task</h2><button type="button" class="close" data-close="create-dialog" aria-label="Close">×</button></div>
+    <label>Title<input name="title" required maxlength="500" placeholder="What should the agent work on?" autofocus></label>
+    <label>Description<textarea name="description" rows="5" placeholder="Context, desired outcome, and how to verify it"></textarea></label>
+    <div class="form-row"><label>Agent<select name="provider"><option value="demo">Demo (no AI calls)</option><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label><label>Starting lane<select name="state"><option value="planning">Planning</option><option value="todo">Todo — start work</option></select></label></div>
+    <label>Local Git repository<input name="repo_path" placeholder="/absolute/path/to/your/repo"></label><p class="hint">Real agents work in a separate Git worktree. Your current checkout is left alone.</p>
+    <button class="primary" type="submit">Create task</button></form>
+  </dialog>
+  <dialog id="task-dialog" class="task-dialog" aria-labelledby="task-heading"><div class="dialog-heading"><div><p id="task-short-id" class="eyebrow"></p><h2 id="task-heading"></h2></div><button class="close" data-close="task-dialog" aria-label="Close">×</button></div>
+    <div id="task-summary"></div>
+    <div class="task-actions"><select id="task-state" aria-label="Task lane"></select><button id="move-task">Move</button><button id="cancel-task" class="quiet">Stop / unqueue</button></div>
+    <details id="edit-details"><summary>Edit task</summary><form id="edit-form"><label>Title<input name="title" required maxlength="500"></label><label>Description<textarea name="description" rows="5"></textarea></label><div class="form-row"><label>Agent<select name="provider"><option value="demo">Demo</option><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label><label>Local repo<input name="repo_path"></label></div><button type="submit">Save changes</button></form></details>
+    <section id="output-section"><h3>Outputs</h3><div id="task-outputs"></div></section>
+    <section><h3>Conversation</h3><div id="task-comments"></div><form id="comment-form"><label class="sr-only" for="comment-body">Comment or reply</label><textarea id="comment-body" rows="3" required placeholder="Add context or feedback…"></textarea><div class="comment-actions"><button type="submit">Add comment</button><button type="button" id="resume-task" class="primary" hidden>Answer & resume</button><button type="button" id="request-changes" class="primary" hidden>Request changes</button></div></form></section>
+    <details><summary>Runs & session</summary><div id="task-runs"></div><button id="reset-session" class="quiet">Reset agent session</button><p class="hint">Keeps the branch and worktree; the next run gets fresh agent context.</p></details>
+  </dialog>
+  <dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-heading"><div class="dialog-heading"><h2 id="settings-heading">Integrations & events</h2><button class="close" data-close="settings-dialog" aria-label="Close">×</button></div>
+    <section><h3>Linear</h3><p id="linear-status" class="hint"></p><form id="linear-form"><div class="form-row"><label>Issue ID<input name="issue_id" required placeholder="ENG-123"></label><label>Agent<select name="provider"><option value="demo">Demo</option><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label></div><label>Local Git repository<input name="repo_path" placeholder="Uses DEFAULT_REPO when left blank"></label><button type="submit">Import issue</button><button type="button" id="reconcile-linear" class="quiet">Reconcile linked statuses</button></form><p class="hint">Only imported issues are tracked. In Linear, use <code>/wait question</code>, <code>/resume answer</code>, or <code>/changes feedback</code>.</p></section>
+    <section><h3>Event subscriptions</h3><p class="hint">Receive durable HTTP events. Delivery is at least once; deduplicate by event ID.</p><div id="subscription-list"></div><form id="subscription-form"><label>Webhook URL<input name="url" required type="url" placeholder="http://127.0.0.1:9000/events"></label><label>Event patterns<input name="types" value="task.state_changed,comment.*" required></label><label>Signing secret (optional)<input name="secret" type="password" autocomplete="new-password"></label><button type="submit">Subscribe</button></form></section>
+    <section><h3>Failed deliveries</h3><div id="delivery-list"></div></section>
+  </dialog>
+  <div id="toast" role="alert" hidden></div>
+</body>
+</html>
