@@ -17,3 +17,8 @@ Each file must exist and be readable when first submitted (20 MiB per file,
 50 MiB total per comment). Include only intended evidence, never credentials or
 unrelated files. Plain paths, relative links, and chat-only attachments are not
 uploaded. Report actual verification and any missing evidence honestly.
+
+When a pull request is the intended deliverable, commit and push the changes to the
+repository remote, create or update the PR, and submit its canonical URL with
+kind="pr". A local commit or a plan to open a PR does not complete that outcome.
+Follow repository instructions and normal app approvals.

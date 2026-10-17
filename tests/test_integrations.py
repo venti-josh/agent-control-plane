@@ -10,7 +10,8 @@ from fastapi.testclient import TestClient
 from acp.api import create_app
 from acp.config import Settings
 from acp.integrations import Integrations
-from acp.service import DomainError
+from acp.service import DomainError, TaskService
+from acp.store import Store
 from conftest import reviewed, started
 
 
@@ -116,7 +117,7 @@ async def test_linear_wait_resume_commands_and_mirror_echo(linear_service):
         assert current['state'] == 'waiting_on_input'
         assert current['comments'][0]['id'] == current['blocker_comment_id']
         await integration.handle_linear(comment_payload('Just a note','comment-2'))
-        assert not any(r['status']=='queued' for r in linear_service.get_task(task['id'])['runs'])
+        assert any(r['status']=='queued' for r in linear_service.get_task(task['id'])['runs'])
         await integration.handle_linear(comment_payload('/resume Option A','comment-3'))
         await integration.handle_linear(comment_payload('/resume Option A','comment-3'))
         current = linear_service.get_task(task['id'])
@@ -173,6 +174,111 @@ async def test_linear_comment_recovers_uncertain_success_without_duplicate(linea
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
         await Integrations(linear_service,client).sync_linear_comment(task['id'],comment['id'])
     assert linear_service.get_task(task['id'])['comments'][0]['external_id']=='linear:remote-1'
+
+
+async def test_linear_updates_share_thread_after_restart_and_uncertain_write(linear_service):
+    task = await imported(linear_service)
+    remote, creates = [], []
+
+    def respond(request):
+        data = json.loads(request.content)
+        if 'commentCreate' in data['query']:
+            value = data['variables']['input']
+            creates.append(value)
+            cid = f'remote-{len(creates)}'
+            remote.append({'id': cid, 'body': value['body'],
+                           'parent': {'id': value['parentId']} if value.get('parentId') else None})
+            if len(creates) == 1:
+                raise httpx.ReadTimeout('Response lost after creation')
+            return httpx.Response(200, json={'data': {'commentCreate': {'success': True, 'comment': {'id': cid}}}})
+        assert 'comments(first:100' in data['query']
+        return httpx.Response(200, json={'data': {'issue': {'comments': {
+            'nodes': remote, 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
+
+    first = linear_service.add_comment(task['id'], 'Starting work')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(httpx.ReadTimeout):
+            await Integrations(linear_service, client).sync_linear_comment(task['id'], first['id'])
+        linear_service = TaskService(Store(linear_service.settings.db_path), linear_service.settings)
+        second = linear_service.add_comment(task['id'], 'Progress')
+        await Integrations(linear_service, client).sync_linear_comment(task['id'], second['id'])
+        await Integrations(linear_service, client).sync_linear_comment(task['id'], first['id'])
+        third = linear_service.add_comment(task['id'], 'Ready for review')
+        await Integrations(linear_service, client).sync_linear_comment(task['id'], third['id'])
+
+    assert [value.get('parentId') for value in creates] == [None, 'remote-1', 'remote-1']
+    assert [c['external_id'] for c in linear_service.get_task(task['id'])['comments']] == [
+        'linear:remote-1', 'linear:remote-2', 'linear:remote-3']
+
+
+async def test_linear_reuses_existing_thread_across_comment_pages(linear_service):
+    task = await imported(linear_service)
+    first = linear_service.add_comment(task['id'], 'Earlier update')
+    new = linear_service.add_comment(task['id'], 'Next update')
+    creates = []
+
+    def respond(request):
+        data = json.loads(request.content)
+        if 'commentCreate' in data['query']:
+            creates.append(data['variables']['input'])
+            return httpx.Response(200, json={'data': {'commentCreate': {
+                'success': True, 'comment': {'id': 'new-reply'}}}})
+        after = data['variables']['after']
+        nodes = ([{'id': 'human-root', 'body': 'Discussion', 'parent': None}] if not after else
+                 [{'id': 'old-reply', 'body': f'<!-- acp:{first["id"]} -->\nEarlier update',
+                   'parent': {'id': 'human-root'}}])
+        return httpx.Response(200, json={'data': {'issue': {'comments': {
+            'nodes': nodes, 'pageInfo': {'hasNextPage': not after, 'endCursor': 'page-2'}}}}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        await Integrations(linear_service, client).sync_linear_comment(task['id'], new['id'])
+    assert creates[0]['parentId'] == 'human-root'
+
+
+@pytest.mark.parametrize('source', ['mirror', 'human'])
+async def test_linear_answer_to_shared_thread_resumes_current_blocker(linear_service, source):
+    task = await imported(linear_service, 'todo')
+    async with httpx.AsyncClient() as client:
+        integration = Integrations(linear_service, client)
+        if source == 'mirror':
+            linear_service.move_task(task['id'], 'waiting_on_input', comment='Which option?')
+            blocker = linear_service.get_task(task['id'])['blocker_comment_id']
+            await integration.handle_linear(comment_payload(
+                f'<!-- acp:{blocker} -->\nWhich option?', 'question', parentId='thread-root'))
+        else:
+            await integration.handle_linear(comment_payload('/wait Which option?', 'question', parentId='thread-root'))
+        await integration.handle_linear(comment_payload('Unrelated reply', 'unrelated', parentId='other-thread'))
+        assert any(r['status'] == 'queued' for r in linear_service.get_task(task['id'])['runs'])
+        await integration.handle_linear(comment_payload('Option B', 'answer', parentId='thread-root'))
+        await integration.handle_linear(comment_payload('Option B', 'answer', parentId='thread-root'))
+    current = linear_service.get_task(task['id'])
+    assert sum(r['status'] == 'queued' for r in current['runs']) == 1
+    assert current['comments'][-1]['in_reply_to'] == current['blocker_comment_id']
+
+
+async def test_linear_published_blocker_accepts_thread_answer_before_mirror_echo(linear_service):
+    task = await imported(linear_service, 'todo')
+    first = linear_service.add_comment(task['id'], 'Working on it')
+    linear_service.move_task(task['id'], 'waiting_on_input', comment='Which option?')
+    blocker = linear_service.get_task(task['id'])['blocker_comment_id']
+
+    def respond(request):
+        data = json.loads(request.content)
+        if 'commentCreate' in data['query']:
+            assert data['variables']['input']['parentId'] == 'root'
+            return httpx.Response(200, json={'data': {'commentCreate': {
+                'success': True, 'comment': {'id': 'question'}}}})
+        return httpx.Response(200, json={'data': {'issue': {'comments': {
+            'nodes': [{'id': 'root', 'body': f'<!-- acp:{first["id"]} -->', 'parent': None}],
+            'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        integration = Integrations(linear_service, client)
+        await integration.sync_linear_comment(task['id'], blocker)
+        await integration.handle_linear(comment_payload('Option A', 'answer', parentId='root'))
+    current = linear_service.get_task(task['id'])
+    assert sum(r['status'] == 'queued' for r in current['runs']) == 1
+    assert current['comments'][-1]['in_reply_to'] == blocker
 
 
 def review_envelope(state='changes_requested', review_id=11):
@@ -376,7 +482,7 @@ async def test_polling_recovers_human_reply_without_replaying_old_or_bot_command
     comments = [
         {'id': 'old', 'body': '/resume old answer', 'createdAt': stamp(now-3600), 'updatedAt': stamp(now-3600), 'user': {'name': 'You'}, 'botActor': None, 'parent': None},
         {'id': 'bot', 'body': '/resume bot answer', 'createdAt': stamp(now+1), 'updatedAt': stamp(now+1), 'user': {'name': 'Bot'}, 'botActor': {'__typename': 'ActorBot'}, 'parent': None},
-        {'id': 'human', 'body': '/resume human answer', 'createdAt': stamp(now+2), 'updatedAt': stamp(now+2+updated_offset), 'user': {'name': 'You'}, 'botActor': None, 'parent': None},
+        {'id': 'human', 'body': 'Here is the human answer', 'createdAt': stamp(now+2), 'updatedAt': stamp(now+2+updated_offset), 'user': {'name': 'You'}, 'botActor': None, 'parent': None},
     ]
     def respond(request):
         return httpx.Response(200, json={'data': {'issue': {'comments': {'nodes': comments, 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
@@ -388,7 +494,7 @@ async def test_polling_recovers_human_reply_without_replaying_old_or_bot_command
     queued = [r for r in current['runs'] if r['status']=='queued']
     assert len(queued)==1
     assert len(queued[0]['inputs'])==1
-    assert next(c for c in current['comments'] if c['id']==queued[0]['inputs'][0]['comment_id'])['body']=='/resume human answer'
+    assert next(c for c in current['comments'] if c['id']==queued[0]['inputs'][0]['comment_id'])['body']=='Here is the human answer'
     assert not any(c['body']=='/resume old answer' for c in current['comments'])
 
 
@@ -435,6 +541,7 @@ async def test_reply_after_reassignment_before_scan_resumes_restored_task(linear
     def stamp(t): return datetime.fromtimestamp(t, timezone.utc).isoformat()
     with linear_service.store.transaction() as db:
         db.execute('UPDATE tasks SET created_at=? WHERE id=?', (now-120, task['id']))
+        db.execute('UPDATE comments SET created_at=? WHERE task_id=?', (now-100, task['id']))
     remote = issue('waiting_on_input', updated=stamp(now-30), labels={'nodes': [{'name': 'acp'}]})
     comments = [
         {'id': 'hidden-reply', 'body': '/resume while hidden', 'createdAt': stamp(now-60), 'updatedAt': stamp(now-60), 'user': {'name': 'You'}, 'botActor': None, 'parent': None},
@@ -454,3 +561,79 @@ async def test_reply_after_reassignment_before_scan_resumes_restored_task(linear
     assert sum(r['status'] == 'queued' for r in current['runs']) == 1
     assert any(c['body'] == '/resume after reassignment' for c in current['comments'])
     assert not any(c['body'] == '/resume while hidden' for c in current['comments'])
+
+
+@pytest.mark.parametrize('body,parent_id', [
+    ('Extra context', None), ('Answer in another thread', 'unrelated-thread'),
+    ('/wait More information', None),
+])
+async def test_any_new_linear_human_comment_resumes_waiting_task(linear_service, body, parent_id):
+    task = await imported(linear_service, 'todo')
+    linear_service.request_input(task['id'], 'Question?')
+    blocker = linear_service.get_task(task['id'])['blocker_comment_id']
+    async with httpx.AsyncClient() as client:
+        integration = Integrations(linear_service, client)
+        payload = comment_payload(body, 'new-human-comment', parentId=parent_id)
+        await integration.handle_linear(payload)
+        await integration.handle_linear(payload)
+    followup = linear_service.claim_next()
+    assert followup is not None
+    assert len(followup['inputs']) == 1
+    answer = linear_service.get_task(task['id'])['comments'][-1]
+    assert followup['inputs'][0]['comment_id'] == answer['id']
+    assert answer['in_reply_to'] == blocker
+    linear_service.mark_started(followup['id'])
+    assert linear_service.get_task(task['id'])['state'] == 'in_progress'
+
+
+@pytest.mark.parametrize('source', ['mirror', 'bot', 'edit'])
+async def test_nonhuman_or_edited_linear_comment_does_not_resume_waiting_task(linear_service, source):
+    task = await imported(linear_service, 'todo')
+    linear_service.request_input(task['id'], 'Question?')
+    blocker = linear_service.get_task(task['id'])['blocker_comment_id']
+    payload = comment_payload('Additional context', 'context')
+    if source == 'mirror':
+        payload['data']['body'] = f'<!-- acp:{blocker} -->\nQuestion?'
+    elif source == 'bot':
+        payload['actor']['type'] = 'integration'
+    else:
+        payload['action'] = 'update'
+    async with httpx.AsyncClient() as client:
+        await Integrations(linear_service, client).handle_linear(payload)
+    assert linear_service.claim_next() is None
+
+
+async def test_delayed_linear_note_before_blocker_does_not_resume(linear_service):
+    from datetime import datetime, timezone
+    task = await imported(linear_service, 'todo')
+    earlier = datetime.now(timezone.utc).isoformat()
+    linear_service.request_input(task['id'], 'New question?')
+    async with httpx.AsyncClient() as client:
+        await Integrations(linear_service, client).handle_linear(
+            comment_payload('Earlier note', 'earlier', createdAt=earlier))
+    assert any(c['body'] == 'Earlier note' for c in linear_service.get_task(task['id'])['comments'])
+    assert linear_service.claim_next() is None
+
+
+async def test_poll_recovers_remote_wait_and_following_answer_together(linear_service):
+    from datetime import datetime, timezone
+    task = await imported(linear_service, 'todo')
+    now = time.time()
+    def stamp(value): return datetime.fromtimestamp(value, timezone.utc).isoformat()
+    comments = [
+        {'id': 'wait', 'body': '/wait Which option?', 'createdAt': stamp(now),
+         'updatedAt': stamp(now), 'user': {'name': 'You'}, 'botActor': None, 'parent': None},
+        {'id': 'answer', 'body': 'Option B', 'createdAt': stamp(now + 0.000001),
+         'updatedAt': stamp(now + 0.000001), 'user': {'name': 'You'}, 'botActor': None, 'parent': None},
+    ]
+    def respond(request):
+        return httpx.Response(200, json={'data': {'issue': {'comments': {
+            'nodes': comments, 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        await Integrations(linear_service, client).poll_comments(task['id'])
+    followup = linear_service.claim_next()
+    assert followup is not None
+    assert len(followup['inputs']) == 1
+    answer = linear_service.get_task(task['id'])['comments'][-1]
+    assert answer['external_id'] == 'linear:answer'
+    assert followup['inputs'][0]['comment_id'] == answer['id']

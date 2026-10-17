@@ -105,7 +105,8 @@ class TaskService:
                                           (in_reply_to, task_id)).fetchone():
             raise DomainError("Reply target does not belong to this task", 422)
         cid, now = str(uuid4()), time.time()
-        db.execute("INSERT INTO comments VALUES(?,?,?,?,?,?,?,?,0)",
+        db.execute("INSERT INTO comments(id,task_id,body,author,in_reply_to,external_id,created_at,updated_at,deleted) "
+                   "VALUES(?,?,?,?,?,?,?,?,0)",
                    (cid, task_id, body, author, in_reply_to, external_id, now, now))
         if origin != 'linear' and self.settings.linear_api_key and self._task(db, task_id)['linear_id']:
             snapshot_files(db, cid, body)
@@ -271,11 +272,14 @@ class TaskService:
             self._check_run(db, task, run_id)
             if resume and run_id:
                 raise DomainError("Agent comments cannot resume themselves", 422)
-            if resume and (task["state"] != "waiting_on_input" or in_reply_to != task["blocker_comment_id"]):
-                raise DomainError("A resume must reply to the current blocker")
+            if resume and task["state"] != "waiting_on_input":
+                raise DomainError("Only a waiting task can be resumed")
+            wake = not run_id and task["state"] == "waiting_on_input"
+            if wake and not in_reply_to:
+                in_reply_to = task["blocker_comment_id"]
             comment = self._comment(db, task_id, body, "agent" if run_id else "you",
                                     "agent" if run_id else "api", in_reply_to)
-            if resume:
+            if wake:
                 self._schedule(db, task_id, "input", {"comment_id": comment["id"]})
             return comment
 

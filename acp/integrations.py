@@ -134,23 +134,40 @@ class Integrations:
             await self.linear("mutation($id:String!,$input:CommentUpdateInput!){commentUpdate(id:$id,input:$input)"
                               "{success}}", {"id": remote_id, "input": {"body": body}})
             return
-        # Find a prior successful write after an uncertain network response. Do not blindly repost.
-        cursor = None
+        # Recover uncertain writes and find the original ACP thread, including after a restart.
+        cursor, remote_comments = None, []
         while True:
             data = await self.linear("query($id:String!,$after:String){issue(id:$id){comments(first:100,after:$after)"
-                                     "{nodes{id body} pageInfo{hasNextPage endCursor}}}}",
+                                     "{nodes{id body parent{id}} pageInfo{hasNextPage endCursor}}}}",
                                      {"id": task["linear_id"], "after": cursor})
             connection = data["issue"]["comments"]
-            match = next((c for c in connection["nodes"] if f"<!-- acp:{comment_id} -->" in c["body"]), None)
-            if match:
-                remote_id = match["id"]
-                break
+            remote_comments.extend(connection["nodes"])
             if not connection["pageInfo"]["hasNextPage"]:
                 break
             cursor = connection["pageInfo"]["endCursor"]
+        mirrored = {}
+        for remote in remote_comments:
+            marker = MIRROR.search(remote.get('body') or '')
+            if marker:
+                mirrored[marker[1]] = remote
+        parent_id = None
+        match = mirrored.get(comment_id)
+        if match:
+            remote_id = match['id']
         if not remote_id:
+            remote_ids = {c['id'] for c in remote_comments}
+            for local in task['comments']:
+                prior = mirrored.get(local['id'])
+                if prior:
+                    root_id = (prior.get('parent') or {}).get('id') or prior['id']
+                    if root_id in remote_ids:
+                        parent_id = root_id
+                        break
+            create_input = {"issueId": task["linear_id"], "body": body}
+            if parent_id:
+                create_input['parentId'] = parent_id
             result = await self.linear("mutation($input:CommentCreateInput!){commentCreate(input:$input)"
-                                       "{success comment{id}}}", {"input": {"issueId": task["linear_id"], "body": body}})
+                                       "{success comment{id}}}", {"input": create_input})
             remote_id = result["commentCreate"]["comment"]["id"]
         with self.store.transaction() as db:
             db.execute("UPDATE comments SET external_id=? WHERE id=?", (f"linear:{remote_id}", comment_id))
@@ -380,10 +397,21 @@ class Integrations:
                 return  # Edits never wake an agent.
             author = (payload.get("actor") or {}).get("name", "Linear")
             comment = self.service._comment(db, task["id"], body, author, "linear", external_id=external_id)
+            if data.get("createdAt"):
+                # Preserve remote ordering when a question and answer arrive in the same poll.
+                comment["created_at"] = timestamp(data["createdAt"])
+                db.execute("UPDATE comments SET created_at=? WHERE id=?", (comment["created_at"], comment["id"]))
             if action != "create" or (payload.get("actor") or {}).get("type", "").lower() != "user":
                 return
             command, _, message = body.partition(" ")
-            if command == "/wait" and message.strip():
+            if task["state"] == "waiting_on_input":
+                blocker = db.execute("SELECT created_at FROM comments WHERE id=?",
+                                     (task["blocker_comment_id"],)).fetchone()
+                if blocker and comment["created_at"] < blocker["created_at"]:
+                    return  # A delayed earlier note is context, not an answer to this question.
+                db.execute("UPDATE comments SET in_reply_to=? WHERE id=?", (task["blocker_comment_id"], comment["id"]))
+                self.service._schedule(db, task["id"], "input", {"comment_id": comment["id"]})
+            elif command == "/wait" and message.strip():
                 try:
                     self.service._move(db, task, "waiting_on_input", "linear", blocker_comment_id=comment["id"])
                 except DomainError as exc:
@@ -391,16 +419,8 @@ class Integrations:
                     self.service._comment(db, task["id"], str(exc), "system", "system")
                 else:
                     Store.enqueue(db, "linear.sync", f"linear-wait:{comment['id']}", {"task_id": task["id"]})
-            elif command == "/resume" and message.strip() and task["state"] == "waiting_on_input":
-                db.execute("UPDATE comments SET in_reply_to=? WHERE id=?", (task["blocker_comment_id"], comment["id"]))
-                self.service._schedule(db, task["id"], "input", {"comment_id": comment["id"]})
             elif command == "/changes" and message.strip() and task["state"] == "ready_for_review":
                 self.service._schedule(db, task["id"], "review", {"comment_id": comment["id"]})
-            elif task["state"] == "waiting_on_input" and data.get("parentId"):
-                parent = db.execute("SELECT external_id FROM comments WHERE id=?", (task["blocker_comment_id"],)).fetchone()
-                if parent and parent[0] == f"linear:{data['parentId']}":
-                    db.execute("UPDATE comments SET in_reply_to=? WHERE id=?", (task["blocker_comment_id"], comment["id"]))
-                    self.service._schedule(db, task["id"], "input", {"comment_id": comment["id"]})
 
     async def github_get(self, path: str, params: dict | None = None) -> dict | list:
         headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
