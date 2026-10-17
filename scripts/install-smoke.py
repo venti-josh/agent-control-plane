@@ -98,7 +98,19 @@ try:
     install()
     config = base / 'home/config.env'
     original = config.read_bytes()
+    # Use a separate Codex home; never alter the user's hooks or hook trust.
+    codex_home = base / 'codex-home'
+    codex_home.mkdir()
+    hooks_file = codex_home / 'hooks.json'
+    hooks_file.write_text(json.dumps({'hooks': {'Stop': [{'hooks': [
+        {'type': 'command', 'command': 'echo unrelated-hook'}]}]}}))
+    cli('activity', 'install', '--codex-home', str(codex_home))
+    hooks_before = hooks_file.read_bytes()
+    manifest = base / 'home/data/codex-activity.hooks.json'
+    manifest_before = manifest.read_bytes()
     install()
+    assert hooks_file.read_bytes() == hooks_before
+    assert manifest.read_bytes() == manifest_before
     assert config.read_bytes() == original
     info = cli('start', '--port', '0')
     assert info['healthy']
@@ -162,6 +174,16 @@ If changes are requested, update the SAME files/tests, rerun unittest, and resub
     install()
     assert config.read_bytes() == original
     cli('start', '--port', '0')
+    assert hooks_file.read_bytes() == hooks_before
+    assert manifest.read_bytes() == manifest_before
+    command = json.loads(manifest_before)['command']
+    callback = subprocess.run(command, shell=True, input=json.dumps({
+        'hook_event_name': 'SessionStart', 'session_id': 'installer-verification'}),
+        text=True, capture_output=True, cwd=base / 'outside-repo', env=env, timeout=10)
+    assert callback.returncode == 0 and json.loads(callback.stdout) == {}, callback.stderr
+    assert cli('activity', 'status')['observed_since'] is not None
+    report['reinstall_preserved_hooks'] = True
+    report['installed_hook_callback_verified'] = True
     saved = cli('show', task_id)
     assert saved['state'] == 'done'
     (base / 'task.json').write_text(json.dumps(saved, indent=2))

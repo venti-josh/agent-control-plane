@@ -299,7 +299,7 @@ def install_hooks(home, database, executable):
     atomic_json(path, data)
     atomic_json(manifest, dict(home=str(home.resolve()), command=command, empty_events=sorted(set(empty_events))))
     return dict(hooks_file=str(path), database=str(database), trust_required=True,
-                next_step='Open /hooks in Codex, review and trust the ACP handlers. Start a new turn/session afterward.')
+                next_step='Open /hooks in the Codex CLI, review and trust the ACP handlers. Start a new turn/session afterward.')
 
 
 def uninstall_hooks(home, database):

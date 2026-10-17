@@ -74,7 +74,7 @@ ACP, through user-level Codex lifecycle hooks. Install the hook handlers once:
 
 ```sh
 acp activity install
-# In Codex: open /hooks, review and trust the ACP command handlers.
+# In the Codex CLI: open /hooks, review and trust the ACP command handlers.
 # Then start a new turn or session.
 acp activity status
 ```
@@ -138,7 +138,7 @@ Configuration and task data survive reinstall. Use the release installer for upd
 Pin a release by using its URL instead of `latest`:
 
 ```sh
-curl -fsSL https://github.com/venti-josh/agent-control-plane/releases/download/v0.1.3/install.sh | sh
+curl -fsSL https://github.com/venti-josh/agent-control-plane/releases/download/v0.1.4/install.sh | sh
 ```
 
 To uninstall, run `acp stop`, then `uv tool uninstall acp`. If the installer supplied
