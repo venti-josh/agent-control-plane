@@ -161,6 +161,13 @@ class TaskService:
                                         "agent" if run_id else "system" if origin == "system" else "you", origin)["id"]
         elif comment:
             self._comment(db, task["id"], comment, "you" if origin != "agent" else "agent", origin)
+        if task['state'] == 'in_progress' and state != 'in_progress':
+            now = time.time()
+            db.execute("UPDATE runs SET activity_finished_at=coalesce(activity_finished_at,?) "
+                       "WHERE task_id=? AND status='running'", (now, task['id']))
+            db.execute('UPDATE subagent_activity SET finished_at=? WHERE finished_at IS NULL '
+                       "AND run_id IN (SELECT id FROM runs WHERE task_id=? AND status='running')",
+                       (now, task['id']))
         old = task["state"]
         db.execute("UPDATE tasks SET state=?,blocker_comment_id=?,version=version+1,updated_at=? WHERE id=?",
                    (state, blocker, time.time(), task["id"]))
@@ -396,6 +403,8 @@ class TaskService:
                 status, error = "failed", "Agent exited without request_input or submit_for_review. Inspect its log and retry."
             db.execute("UPDATE runs SET status=?,error=?,finished_at=? WHERE id=?",
                        (status, error, time.time(), run_id))
+            db.execute('UPDATE subagent_activity SET finished_at=? WHERE run_id=? AND finished_at IS NULL',
+                       (time.time(), run_id))
             self._event(db, f"run.{status}", task["id"], {"run_id": run_id, "error": error})
             if error:
                 db.execute("UPDATE tasks SET last_error=? WHERE id=?", (error, task["id"]))

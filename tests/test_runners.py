@@ -88,6 +88,14 @@ def request(path='', data=None):
         return json.load(r)
 print(json.dumps({'type':'system','session_id':session} if claude else
                  {'type':'thread.started','thread_id':session}), flush=True)
+if '[subagents]' in prompt:
+    if claude:
+        child_event = {'type':'system', 'subtype':'task_started', 'task_id':'child', 'task_type':'local_agent'}
+    else:
+        child_event = {'type':'item.completed', 'item': {'type':'collab_tool_call', 'status':'completed',
+                       'agents_states': {'child': {'status':'running'}}}}
+    print(json.dumps(child_event), flush=True)
+    time.sleep(.4)
 launch_cwd = os.getcwd()
 chosen = Path(launch_cwd).parent / 'provider-workspace'
 if not chosen.exists():
@@ -110,6 +118,35 @@ else:
 ''')
     path.chmod(0o755)
     return str(path)
+
+
+@pytest.mark.parametrize('provider', ['claude', 'codex'])
+async def test_cli_stdout_subagent_activity_reaches_api_and_closes_with_parent(
+        live_api, git_repo, fake_cli, provider):
+    svc = live_api
+    svc.settings.claude_command = svc.settings.codex_command = fake_cli
+    task = svc.create_task('Observed child', description='[subagents]', provider=provider,
+                           state='todo', repo_path=str(git_repo))
+    pending = asyncio.create_task(Worker(svc).run_once())
+    try:
+        async with httpx.AsyncClient(base_url=svc.settings.base_url) as api:
+            for _ in range(300):
+                data = (await api.get('/api/activity')).json()
+                if data['subagents']:
+                    break
+                await asyncio.sleep(.01)
+            assert data['running'] == 2 and data['subagents'] == 1
+            await pending
+            data = (await api.get('/api/activity')).json()
+            assert data['running'] == 0 and data['subagents'] == 0
+            assert data['averages']['30m'] > 0
+            intervals = svc.store.all('SELECT * FROM subagent_activity WHERE run_id IN '
+                                      '(SELECT id FROM runs WHERE task_id=?)', (task['id'],))
+            assert len(intervals) == 1 and intervals[0]['finished_at'] is not None
+    finally:
+        if not pending.done():
+            pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
 
 
 @pytest.mark.parametrize('provider', ['claude','codex'])

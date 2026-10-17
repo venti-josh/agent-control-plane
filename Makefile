@@ -7,6 +7,7 @@ check:
 	uv run --locked pytest -q
 	uv run --locked ruff check --select E9,F63,F7,F82 acp tests
 	node --check acp/static/app.js
+	node --check acp/static/activity.js
 
 serve:
 	ACP_CONFIG_FILE="$(CURDIR)/.env" uv run --locked acp serve

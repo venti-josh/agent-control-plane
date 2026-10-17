@@ -45,6 +45,32 @@ active runs and retains their session references for explicit retry. Agent files
 does not stop tasks. Interactive API documentation is at the reported URL plus
 `/docs`. Choose **Try a demo** to exercise input and review without an agent account.
 
+### Leo’s activity overlay
+
+The board includes a floating Leo tile. Drag its heading, or focus the heading
+and use arrow keys (Shift for fine movement, Home to return to the bottom right).
+Use **− / +** to collapse or expand it and **×** to hide it. The toolbar’s
+**Leo · Agent activity** button restores it. Position and display preferences are
+saved in the current browser.
+
+The tile shows current running ACP agents, observed subagents, input waits, and
+time-weighted average concurrency over the last 30 minutes, 1 hour, and 3 hours.
+Each average divides observed running agent-seconds by the full window, including
+idle time. Queued/unlaunched runs and agents that have submitted input/review are
+excluded. Counters refresh every five seconds while the tile is visible.
+
+CLI subagents are observed from Codex collaboration and Claude local-agent events.
+Codex app task chats report observed descendant state changes through the bound
+`desktop action RUN_ID activity --text '{"CHILD_ID":"running"}'` action; they must
+also report completion/interruption or a human input wait. App counts depend on
+these cooperative reports. This covers ACP runs, not every chat open in Codex;
+historical subagent activity before tracking was installed cannot be reconstructed.
+No transcript or prompt content is stored in the activity table.
+
+Leo is calm below a 30-minute average of 1, sad at 1, happy and bouncing at 2,
+and in rainbow overdrive at 3 or more. System reduced-motion settings disable
+animation. Failed activity requests show unavailable counters until recovery.
+
 ### Storage and configuration
 
 By default ACP uses `$XDG_DATA_HOME/acp`, or `$HOME/.local/share/acp`:
@@ -272,6 +298,7 @@ The same operations are available through `TaskService` functions and HTTP. Main
 | --- | --- |
 | `POST /api/tasks` | Create a task in Planning or Todo. |
 | `GET /api/tasks` / `GET /api/tasks/{id}` | Board and complete task history. |
+| `GET /api/activity` | Current observed agent counts and time-weighted concurrency averages. |
 | `PATCH /api/tasks/{id}` | Edit context/provider/repository, subject to active-run checks. |
 | `POST /api/tasks/{id}/transition` | Validate and commit a state change. |
 | `POST /api/tasks/{id}/comments` | Comment; optionally reply to a blocker and resume. |
@@ -500,6 +527,7 @@ For optional browser tests:
 uv sync --locked --group browser
 uv run --locked --group browser playwright install chromium
 uv run --locked --group browser python tests/browser_smoke.py
+uv run --locked --group browser python tests/browser_overlay.py
 # Or point to an installed Chromium:
 CHROMIUM_EXECUTABLE=/usr/bin/chromium uv run --locked --group browser python tests/browser_smoke.py
 ```
@@ -516,6 +544,7 @@ which live integrations were exercised.
 | `store.py` | SQLite schema, event log, durable outbox. |
 | `worker.py` | Run scheduling and retryable event delivery. |
 | `runners.py` | Claude/Codex CLI adapters, sessions, launch directories, logs. |
+| `activity.py` | Persisted observed subagent intervals and agent concurrency summaries. |
 | `desktop.py` | Supported Codex app queue, dispatch lifecycle, run-scoped actions. |
 | `mcp_server.py` | Four task tools exposed over stdio. |
 | `integrations.py` | Single-workspace Linear sync and GitHub review events. |

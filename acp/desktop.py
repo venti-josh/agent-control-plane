@@ -135,6 +135,11 @@ class DesktopBridge:
             'Actions: get (current context/cancellation check); comment --text "progress"; '
             'input --text "blocking question"; review --text "result and verification" '
             '[--output-url PATH_OR_URL --kind text|file|url|pr]. '
+            'If authorized to use subagents, report their observed state changes with '
+            "`activity --text '{\"SUBAGENT_ID\":\"running\"}'` after starting/resuming them and "
+            'after each wait/completion (use completed, interrupted, errored, or waiting_on_input as observed). '
+            'Include nested subagents when visible via list_agents; report only this run’s descendants. '
+            'Do not infer activity from commentary or create subagents just for tracking. '
             'After input or review, end your turn for the user to respond.\n')
         return {'task_id': task['id'], 'repo_path': task['repo_path'],
                 'prompt': build_prompt(task, run, connector), 'title': f"ACP: {task['title']}"}
@@ -165,6 +170,19 @@ class DesktopBridge:
         entry = self.store.one('SELECT * FROM desktop_runs WHERE run_id=?', (run_id,))
         if not entry or entry['thread_id'] != thread_id(session) or entry['phase'] != 'attached':
             raise DomainError('Chat is not bound to this run')
+        if action == 'activity':
+            from .activity import Activity, RUNNING, WAITING, ENDED
+            try:
+                changes = json.loads(text)
+            except (ValueError, TypeError):
+                raise DomainError('Activity must be a JSON object mapping subagent IDs to observed states.', 422)
+            if (not isinstance(changes, dict) or len(changes) > 256 or
+                    any(not key or len(key) > 256 or not isinstance(value, str) or
+                        value not in RUNNING | WAITING | ENDED for key, value in changes.items())):
+                raise DomainError('Use subagent IDs and running, waiting_on_input, or terminal states.', 422)
+            if not Activity(self.store).report(run_id, changes):
+                raise DomainError('This run is no longer doing work; stop reporting activity.')
+            return {'recorded': True}
         if action == 'get':
             return task
         if action == 'comment':

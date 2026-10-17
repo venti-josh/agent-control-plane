@@ -104,7 +104,7 @@ def main() -> None:
         if name in {'complete', 'acknowledge'}:
             item.add_argument('--error', default='')
         if name == 'action':
-            item.add_argument('action', choices=['get', 'comment', 'input', 'review'])
+            item.add_argument('action', choices=['get', 'comment', 'input', 'review', 'activity'])
             item.add_argument('--text', default='')
             item.add_argument('--output-url', default='')
             item.add_argument('--kind', choices=['text', 'file', 'url', 'pr'], default='text')

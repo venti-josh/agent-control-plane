@@ -1,5 +1,45 @@
 # Verification record
 
+## Leo activity overlay, local review branch — 2026-10-17
+
+Implemented on `acp/55ce0117-fbb`, based on local main `d97f0da`.
+The floating board tile supports pointer/keyboard movement, viewport bounds,
+collapse/expand, hide/restore, and browser-persisted preferences. Its animated
+moustached lion follows the requested 30-minute average thresholds; reduced
+motion disables animation.
+
+- `env ACP_CONFIG_FILE=/dev/null make check`: **149 passed**, Ruff passed, both
+  JavaScript syntax checks passed. One existing Starlette HTTPX deprecation warning.
+- Native Chrome `tests/browser_overlay.py`: running/input counts, all four moods
+  at exact thresholds, automatic refresh, dragging, keyboard movement, preference
+  persistence after reload, narrow viewport bounds, reduced motion, failed request
+  recovery, delayed successful response, and timeout recovery passed.
+- Native Chrome `tests/browser_smoke.py`: seven lanes, live SSE events,
+  input/review/revision, create/move, escaped content, subscriptions, and mobile
+  viewport passed. Updated its stale Settings selector and expanded the existing
+  Advanced / Event subscriptions controls; no product change for that repair.
+- Real subprocess/HTTP tests with synthetic Codex and Claude executables verified
+  stdout subagent events reach the activity API and close when their parent stops.
+  Focused tests cover deduplication, resume, persistence, input/review boundaries,
+  acknowledgement delay, recovery, revoked/mismatched desktop reports, and failed
+  Codex calls containing terminal child states.
+- Independent read-only review found a terminal-event omission and overlapping
+  slow-poll bug. Both were reproduced with failing regressions and fixed. Re-review
+  reported no remaining actionable findings; revised small text contrast exceeds
+  4.5:1.
+- A local wheel built successfully. Its activity module, overlay JavaScript, and
+  CSS matched source byte-for-byte.
+
+Counts cover ACP runs and observed descendants. Desktop child observations are
+cooperative reports from the bound task chat; they are not an automatic census of
+all Codex chats. Historical subagent activity before installation is unavailable.
+Averages divide observed running agent-seconds by the full 30m/1h/3h windows.
+
+Screenshots for calm/sad/happy/rainbow and mobile, plus the local wheel, are under
+`.acp/overlay-review/` in this worktree. Browser/test data used isolated temporary
+databases, with no model calls. The live installation was not upgraded or restarted.
+The branch is retained for review; no merge, push, release, or deployment.
+
 ## Claude login retry — 2026-10-17
 
 After the user signed into Claude Desktop, a real ACP Claude Code test and a fresh
