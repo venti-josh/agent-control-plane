@@ -45,13 +45,29 @@ active runs and retains their session references for explicit retry. Agent files
 does not stop tasks. Interactive API documentation is at the reported URL plus
 `/docs`. Choose **Try a demo** to exercise input and review without an agent account.
 
-### Leo’s activity overlay
+### Comet’s macOS activity overlay
 
-The board includes a floating Leo tile. Drag its heading, or focus the heading
-and use arrow keys (Shift for fine movement, Home to return to the bottom right).
-Use **− / +** to collapse or expand it and **×** to hide it. The toolbar’s
-**Leo · Agent activity** button restores it. Position and display preferences are
-saved in the current browser.
+Run `uv run --locked acp overlay start` with the ACP service running to open the
+native floating macOS panel. It stays above ordinary apps and can follow Spaces.
+Drag anywhere on the square tile to move it; click without dragging to expand or
+minimize it. Drag the small bottom-right grip to resize; the pet and counters
+scale together, and your size is remembered. Both sizes share one translucent,
+borderless surface.
+The comet in the macOS menu bar provides Show, Hide, Reset position, and Quit.
+Position and display preferences are saved locally. Building the panel once
+requires Apple's command line tools (`xcode-select --install`).
+
+To test without touching live agents, run:
+
+```sh
+ACP_OVERLAY_UI=1 ACP_CONFIG_FILE=/dev/null uv run --locked python tests/mac_overlay.py
+```
+
+After native checks pass, open the printed `controls` URL. It shows Dead, Sad,
+Happy, and Rainbow side by side in both tile sizes. The desktop buttons drive
+simulated activity in the native panel within five
+seconds. The preview stays open until **Quit Comet**. Only this test
+server exposes mood controls; the normal overlay always follows actual activity.
 
 The tile shows current running ACP agents, observed subagents, input waits, and
 time-weighted average concurrency over the last 30 minutes, 1 hour, and 3 hours.
@@ -67,8 +83,9 @@ these cooperative reports. This covers ACP runs, not every chat open in Codex;
 historical subagent activity before tracking was installed cannot be reconstructed.
 No transcript or prompt content is stored in the activity table.
 
-Leo is calm below a 30-minute average of 1, sad at 1, happy and bouncing at 2,
-and in rainbow overdrive at 3 or more. System reduced-motion settings disable
+Comet plays dead below a 30-minute average of 1 (X eyes, limp tail, no motion),
+sighs with drooping ears and tears from 1 to below 2, flies happily from 2 to
+below 3, and leaves a rainbow trail at 3 or more. System reduced-motion settings disable
 animation. Failed activity requests show unavailable counters until recovery.
 
 ### Storage and configuration

@@ -1,44 +1,81 @@
 # Verification record
 
-## Leo activity overlay, local review branch — 2026-10-17
+## Native Comet activity overlay — 2026-10-17
 
-Implemented on `acp/55ce0117-fbb`, based on local main `d97f0da`.
-The floating board tile supports pointer/keyboard movement, viewport bounds,
-collapse/expand, hide/restore, and browser-persisted preferences. Its animated
-moustached lion follows the requested 30-minute average thresholds; reduced
-motion disables animation.
+Added a native macOS floating panel with the Comet critter above Running/Waiting
+counts and expandable concurrency averages. The borderless translucent square
+supports click-to-toggle, drag-to-move, and a bottom-right resize grip. Content
+scales proportionally; position, mode, visibility, and scale persist. Four moods
+follow observed 30-minute activity; reduced motion freezes animation.
 
-- `env ACP_CONFIG_FILE=/dev/null make check`: **149 passed**, Ruff passed, both
-  JavaScript syntax checks passed. One existing Starlette HTTPX deprecation warning.
-- Native Chrome `tests/browser_overlay.py`: running/input counts, all four moods
-  at exact thresholds, automatic refresh, dragging, keyboard movement, preference
-  persistence after reload, narrow viewport bounds, reduced motion, failed request
-  recovery, delayed successful response, and timeout recovery passed.
-- Native Chrome `tests/browser_smoke.py`: seven lanes, live SSE events,
-  input/review/revision, create/move, escaped content, subscriptions, and mobile
-  viewport passed. Updated its stale Settings selector and expanded the existing
-  Advanced / Event subscriptions controls; no product change for that repair.
-- Real subprocess/HTTP tests with synthetic Codex and Claude executables verified
-  stdout subagent events reach the activity API and close when their parent stops.
-  Focused tests cover deduplication, resume, persistence, input/review boundaries,
-  acknowledgement delay, recovery, revoked/mismatched desktop reports, and failed
-  Codex calls containing terminal child states.
-- Independent read-only review found a terminal-event omission and overlapping
-  slow-poll bug. Both were reproduced with failing regressions and fixed. Re-review
-  reported no remaining actionable findings; revised small text contrast exceeds
-  4.5:1.
-- A local wheel built successfully. Its activity module, overlay JavaScript, and
-  CSS matched source byte-for-byte.
+Activity counts track ACP runs and observed subagents, exclude queued agents,
+and count input waits separately. Averages divide observed agent-seconds by the
+full 30-minute, 1-hour, or 3-hour window, including idle time. Codex app descendants
+require cooperative activity reports; this does not count unrelated app chats or
+reconstruct historical subagent activity.
 
-Counts cover ACP runs and observed descendants. Desktop child observations are
-cooperative reports from the bound task chat; they are not an automatic census of
-all Codex chats. Historical subagent activity before installation is unavailable.
-Averages divide observed running agent-seconds by the full 30m/1h/3h windows.
+Validation:
 
-Screenshots for calm/sad/happy/rainbow and mobile, plus the local wheel, are under
-`.acp/overlay-review/` in this worktree. Browser/test data used isolated temporary
-databases, with no model calls. The live installation was not upgraded or restarted.
-The branch is retained for review; no merge, push, release, or deployment.
+- Full local check: **153 passed**, Ruff and three JavaScript syntax checks passed.
+  One existing Starlette HTTPX deprecation warning remains.
+- Browser overlay checks: backend-driven moods, animation/stillness, reduced
+  motion, drag/keyboard controls, toggle/hide, persistence, narrow viewport,
+  and API failure/slow-response recovery passed.
+- Native checks: actual AppKit gestures, square resizing, content scale, saved
+  scale, toggle-then-drag race recovery, restart persistence, singleton,
+  visibility over another app, hide/show, and stop passed. Production-source
+  pixel capture measured transparent corners (alpha 0) and translucent fill
+  (alpha 0.6588). Physical multi-display/Spaces gestures remain manual checks.
+- The isolated manual preview shows every mood using production assets and can
+  drive synthetic activity without model calls. It remains open until Quit.
+- Independent review caught a dropped-layout race after a toggle followed by
+  immediate dragging. Mouse-up resynchronization and a native regression cover it.
+
+With user approval, installed the local wheel and connected Comet to the real
+ACP service. Backed up the database and previous installation, confirmed no
+queued/running agents before the initial service restart, verified task IDs and
+states were unchanged, and passed SQLite integrity_check. Subsequent visual
+updates restarted only the overlay; the agent service stayed running. Served
+assets matched the approved source and live counts matched the activity API.
+Synthetic preview controls are absent from the normal service. No public release
+or merge was performed for this feature.
+
+
+## Published v0.1.2 and existing-tool upgrade — 2026-10-17
+
+[Release v0.1.2](https://github.com/venti-josh/agent-control-plane/releases/tag/v0.1.2)
+was published from `d97f0da76b276eb2b85f3f1f46fd42795f9ff331`.
+
+- [Release workflow](https://github.com/venti-josh/agent-control-plane/actions/runs/39051445895)
+  passed macOS/Linux checks, build, installed demo task flow, and publication.
+- [Compatibility matrix](https://github.com/venti-josh/agent-control-plane/actions/runs/39051445904)
+  passed Python 3.11 and 3.14 on macOS/Linux. Local `make check` passed **136 tests**,
+  Ruff, and JavaScript checks; the local installed demo flow also passed.
+- The literal public installer command updated the existing user installation from
+  the local 0.1.1 build to public 0.1.2 after active runs settled and services stopped:
+  `curl -fsSL https://github.com/venti-josh/agent-control-plane/releases/latest/download/install.sh | sh`.
+- Before/after snapshots confirmed identical configuration bytes, all task/run/
+  comment/artifact/desktop-run records, and dispatcher IDs in the main and test
+  boards. The main board retained four tasks and restarted healthy on localhost:8765.
+- The public wheel's checksum matched its published manifest. All **19 packaged
+  ACP files** matched the release source and installed tool byte-for-byte.
+- A Codex app task paused for input before the upgrade and resumed in the same
+  chat afterward. Codex created its own managed worktree and submitted a greeting
+  file for review; independent execution passed both greeting tests.
+- The revision initially timed out before starting because the test and live boards
+  shared a dispatcher occupied by a new live Linear task. The stale claim was
+  rejected without starting duplicate work. A user-approved temporary test
+  dispatcher removed that contention; retry resumed the original task chat
+  (`01a14ac9-0656-7142-90e7-83866fec590d`) and the same worktree successfully.
+- The complete flow reached **Done** after input, answer, implementation, review,
+  and revision: three successful runs and one recorded pre-start timeout. Final
+  independent verification passed **3 greeting tests**. Only the two intended
+  files were added; ACP workspace/branch fields stayed empty and ACP created no
+  worktree directory. The temporary test service was disconnected and stopped;
+  the upgraded main board remains healthy with its original dispatcher.
+
+Evidence: `.acp/release-0.1.2/`, including public release metadata, CI results,
+installer output, data snapshots, and packaged-file comparison.
 
 ## Claude login retry — 2026-10-17
 
@@ -86,7 +123,8 @@ desktop execution for ACP.
 
 Evidence: `.acp/agent-workspace-live/report.json`, `greeting-tests.log`, installation
 snapshots, and `.acp/desktop-live/pytest-workspace.log`. This supersedes the earlier
-ACP-owned workspace design below. These changes are not included in a GitHub release yet.
+ACP-owned workspace design below. These changes were subsequently published in
+v0.1.2, verified above.
 
 ## Codex app dispatcher, unpublished local build — 2026-10-17
 
@@ -124,7 +162,8 @@ not a new release. The public GitHub v0.1.1 installer remains unchanged.
 ## Published v0.1.1 and existing-tool upgrade — 2026-10-16
 
 [Release v0.1.1](https://github.com/venti-josh/agent-control-plane/releases/tag/v0.1.1)
-was published from `dbc3ed4dd94a48b2cabea4232276d2927cce4b6e` and is the latest release.
+was published from `dbc3ed4dd94a48b2cabea4232276d2927cce4b6e` and was the latest
+release at verification time.
 
 - [Release workflow](https://github.com/venti-josh/agent-control-plane/actions/runs/38997409955)
   passed macOS/Linux checks, build, installed demo task flow, and publication.

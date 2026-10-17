@@ -1,0 +1,21 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Comet animations</title>
+<style>
+*{box-sizing:border-box}body{font:15px system-ui;margin:0;background:#e8e4df;color:#34303f;padding:36px 24px}main{max-width:1080px;margin:auto}header{display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap}h1{font-size:27px;font-weight:600;letter-spacing:-.7px;margin:0 0 8px}p{line-height:1.5;margin:0;color:#625c68}button{font:inherit;color:inherit;cursor:pointer;border:0;border-radius:10px;padding:10px 16px;background:#ffffff99}button:hover{background:#fff}button[aria-pressed=true]{background:#bde1d5}#gallery{display:grid;grid-template-columns:repeat(4,minmax(224px,1fr));gap:18px;margin:30px 0}article{min-width:0}iframe{display:block;width:224px;height:268px;margin:auto;border:0;background:transparent}h2{font-size:16px;margin:0 0 6px}article p{font-size:13px;min-height:40px}article button{margin-top:14px;width:100%}.caption{padding:0 6px}footer{border-top:1px solid #34303f16;padding-top:20px;display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}footer p{font-size:13px}#status{color:#386653}@media(max-width:1020px){#gallery{grid-template-columns:repeat(2,minmax(224px,1fr))}}@media(max-width:530px){#gallery{grid-template-columns:1fr}body{padding:24px 16px}}
+</style></head><body><main>
+<header><div><h1>Comet, in every mood.</h1><p>Live animations at the overlay’s actual size.</p></div><button id="size" aria-pressed="false">Show expanded tiles</button></header>
+<section id="gallery" aria-label="All Comet animations">
+<article><iframe src="/preview/animation/dead" title="Dead animation"></iframe><div class="caption"><h2>Dead</h2><p>Flat, motionless, with a limp tail.</p><button data-mood="dead" aria-pressed="false">Try Dead on desktop</button></div></article>
+<article><iframe src="/preview/animation/sad" title="Sad animation"></iframe><div class="caption"><h2>Sad</h2><p>Drooping ears, a little sigh, falling tears.</p><button data-mood="sad" aria-pressed="false">Try Sad on desktop</button></div></article>
+<article><iframe src="/preview/animation/happy" title="Happy animation"></iframe><div class="caption"><h2>Happy</h2><p>A gentle figure-eight with a blue trail.</p><button data-mood="happy" aria-pressed="false">Try Happy on desktop</button></div></article>
+<article><iframe src="/preview/animation/rainbow" title="Rainbow animation"></iframe><div class="caption"><h2>Rainbow</h2><p>An easy loop, soft rainbow trail, and a few sparks.</p><button data-mood="rainbow" aria-pressed="true">Try Rainbow on desktop</button></div></article>
+</section><footer><p id="status" role="status">Rainbow on desktop · simulated activity</p><p>Drag the desktop tile anywhere. Click it to expand or minimize.<br>Quit from the comet menu when finished.</p></footer>
+<script>
+let expanded=false;
+document.getElementById('size').onclick=event=>{expanded=!expanded;event.target.setAttribute('aria-pressed',String(expanded));event.target.textContent=expanded?'Show minimized tiles':'Show expanded tiles';document.querySelectorAll('iframe').forEach(frame=>frame.contentWindow.postMessage({expanded},location.origin));};
+document.querySelectorAll('[data-mood]').forEach(button=>button.onclick=async()=>{
+try{const response=await fetch('/preview/mood/'+button.dataset.mood,{method:'POST'});
+if(!response.ok)throw new Error();document.querySelectorAll('[data-mood]').forEach(b=>b.setAttribute('aria-pressed',String(b===button)));
+document.getElementById('status').textContent=button.dataset.mood[0].toUpperCase()+button.dataset.mood.slice(1)+' on desktop · allow up to 5 seconds';
+}catch(_){document.getElementById('status').textContent='Preview has stopped. Restart the preview to continue.';}});
+</script></main></body></html>

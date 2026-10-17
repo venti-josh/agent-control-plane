@@ -4,9 +4,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ACP — Personal agent orchestration</title>
   <link rel="stylesheet" href="/static/style.css">
-  <link rel="stylesheet" href="/static/activity.css">
   <script src="/static/app.js" defer></script>
-  <script src="/static/activity.js" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -15,7 +13,7 @@
   </header>
   <main>
     <section class="heading"><div><p class="eyebrow">YOUR LOCAL CONTROL PLANE</p><h1>Work, with an agent.</h1><p class="subtitle">Plan the task. Queue the work. Review the result.</p></div><button id="new-task" class="primary">+ New task</button></section>
-    <section class="toolbar"><div><strong>Board</strong><span class="separator"></span><span id="task-count">0 tasks</span><span id="running-count"></span></div><div><button id="activity-restore" class="quiet" aria-label="Show agent overlay" hidden>Leo · Agent activity</button><button id="demo-btn" class="quiet">Try a demo</button><span id="default-provider" class="chip"></span></div></section>
+    <section class="toolbar"><div><strong>Board</strong><span class="separator"></span><span id="task-count">0 tasks</span><span id="running-count"></span></div><div><button id="demo-btn" class="quiet">Try a demo</button><span id="default-provider" class="chip"></span></div></section>
     <div id="health-warning" role="status" hidden></div>
     <section id="board" class="board" aria-label="Task board"></section>
     <footer><span>Todo starts a run. Waiting pauses it. Your review drives the next step.</span><span>Local-first · One workspace</span></footer>
@@ -58,48 +56,6 @@
       <details id="delivery-details"><summary id="delivery-summary">Delivery diagnostics</summary><div id="delivery-list"></div></details>
     </details>
   </dialog>
-  <aside id="activity-overlay" class="activity-overlay" aria-label="Agent activity" data-mood="calm">
-    <div class="activity-heading">
-      <button id="activity-move" aria-label="Move agent overlay" aria-describedby="activity-move-help"><span class="activity-grip" aria-hidden="true">⠿</span>Agent activity</button>
-      <button id="activity-toggle" aria-label="Collapse agent overlay" aria-controls="activity-details" aria-expanded="true">−</button>
-      <button id="activity-hide" aria-label="Hide agent overlay">×</button>
-    </div>
-    <span id="activity-move-help" class="sr-only">Drag to move. Arrow keys move 16 pixels, Shift plus arrow moves 4 pixels. Home returns to the bottom right.</span>
-    <div class="activity-character">
-      <svg id="activity-pet" class="activity-pet" viewBox="0 0 144 128" role="img" aria-label="Leo is calm and looking good">
-        <defs><linearGradient id="leo-fur" x1="0" y1="0" x2=".8" y2="1"><stop stop-color="#edb65e"/><stop offset="1" stop-color="#cd873d"/></linearGradient><linearGradient id="leo-face" x2=".3" y2="1"><stop stop-color="#ffe4a1"/><stop offset="1" stop-color="#f4c778"/></linearGradient></defs>
-        <g class="leo-rainbow" fill="none" stroke-width="4" stroke-linecap="round"><path d="M10 77a62 62 0 0 1 124 0" stroke="#e7a5c3"/><path d="M16 77a56 56 0 0 1 112 0" stroke="#eec68d"/><path d="M22 77a50 50 0 0 1 100 0" stroke="#afc9a5"/><path d="M28 77a44 44 0 0 1 88 0" stroke="#b4b6df"/></g>
-        <ellipse class="leo-shadow" cx="72" cy="117" rx="34" ry="5" fill="#9a7042" opacity=".19"/>
-        <g class="leo-body">
-          <path d="M41 97Q22 101 23 84Q10 80 20 66Q11 54 25 47Q19 30 38 31Q40 14 56 23Q68 8 78 22Q95 13 100 30Q119 27 119 44Q135 49 124 64Q136 80 122 87Q125 104 107 102Q94 119 80 108Q63 121 53 108Q40 114 41 97Z" fill="url(#leo-fur)" stroke="#ba7c39" stroke-width="1.5" stroke-linejoin="round"/>
-          <path d="m35 43 5-7m9-6 4 3m31-7-2 6m21 9-5 3m24 20-7-2m5 27-7-3m-78-8 5-2m9 19 4-5" stroke="#f7d289" stroke-width="3" stroke-linecap="round"/>
-          <ellipse cx="43" cy="108" rx="12" ry="7" fill="#eaba65" stroke="#bc813f" stroke-width="1.2"/><ellipse cx="99" cy="108" rx="12" ry="7" fill="#eaba65" stroke="#bc813f" stroke-width="1.2"/>
-          <circle cx="40" cy="48" r="11" fill="#f3cc7d"/><circle cx="104" cy="48" r="11" fill="#f3cc7d"/><circle cx="40" cy="48" r="6" fill="#c28b57"/><circle cx="104" cy="48" r="6" fill="#c28b57"/>
-          <path d="M39 61Q40 36 72 37Q104 36 106 63L109 79Q108 104 72 105Q37 104 35 80Z" fill="url(#leo-face)"/>
-          <path d="m60 39 5-8 7 8 8-6 1 9" fill="#ffe3a2" stroke="#e1ae62" stroke-width="1.2" stroke-linejoin="round"/>
-          <g class="leo-eyes" fill="#493530"><ellipse cx="56" cy="65" rx="5" ry="6.5"/><ellipse cx="88" cy="65" rx="5" ry="6.5"/><g fill="#fff8e6"><circle cx="57.5" cy="63" r="1.8"/><circle cx="89.5" cy="63" r="1.8"/></g></g>
-          <g class="leo-eyelids" fill="#f8d38a"><path d="m48 57 15 7V54H48Z"/><path d="m81 64 15-7v-3H81Z"/></g>
-          <g class="leo-blush" fill="#df926d" opacity=".6"><ellipse cx="47" cy="77" rx="7" ry="4"/><ellipse cx="97" cy="77" rx="7" ry="4"/></g>
-          <ellipse cx="72" cy="83" rx="20" ry="14" fill="#ffe5ae"/>
-          <path class="leo-smile" d="M64 90q8 9 16 0" fill="none" stroke="#76513a" stroke-width="2.2" stroke-linecap="round"/>
-          <path class="leo-sad-mouth" d="M65 96q7-7 14 0" fill="none" stroke="#76513a" stroke-width="2.2" stroke-linecap="round"/>
-          <path d="M72 80C62 72 60 90 45 78C44 94 63 96 72 85C81 96 100 94 99 78C84 90 82 72 72 80Z" fill="#624333"/>
-          <path d="M67 75q5-4 10 0l-5 5Z" fill="#8e5c3c"/>
-          <path d="m49 108 1 4m-9-4 1 4m54-4 1 4m7-4-1 4" stroke="#bc813f" stroke-width="1.2" stroke-linecap="round"/>
-        </g>
-        <g class="leo-sparkles" fill="#b09acb"><path d="m17 33 2-6 2 6 6 2-6 2-2 6-2-6-6-2Z"/><path d="m122 94 2-6 2 6 6 2-6 2-2 6-2-6-6-2Z"/><circle cx="124" cy="28" r="3" fill="#e6b865"/><circle cx="15" cy="99" r="2.5" fill="#9cbf97"/></g>
-      </svg>
-      <div class="activity-character-copy"><span>LEO</span><strong id="activity-mood">Looking good, Leo</strong></div>
-    </div>
-    <div class="activity-counters"><div><strong id="activity-running">—</strong><span><i></i>Running<br>agents</span></div><div><strong id="activity-waiting">—</strong><span><i></i>Waiting<br>on input</span></div></div>
-    <div id="activity-details" class="activity-details">
-      <p id="activity-children" class="activity-children">Connecting to local ACP</p>
-      <div class="activity-average-heading"><strong>Average running</strong><span>agents / time window</span></div>
-      <dl class="activity-averages"><div><dt>30 min</dt><dd id="activity-30m">—</dd></div><div><dt>1 hour</dt><dd id="activity-1h">—</dd></div><div><dt>3 hours</dt><dd id="activity-3h">—</dd></div></dl>
-      <p class="activity-note">ACP runs + observed subagents. Leo’s mood follows the 30-minute average.</p>
-    </div>
-    <p id="activity-status" class="activity-status" role="status">Connecting to local ACP</p>
-  </aside>
   <div id="toast" role="alert" hidden></div>
 </body>
 </html>

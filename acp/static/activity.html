@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ACP Comet</title><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/activity.css">
+<script src="/static/comet.js" defer></script>
+<script src="/static/activity.js" defer></script></head><body>
+<button id="activity-restore" aria-label="Show agent overlay" hidden>Show Comet</button>
+  <aside id="activity-overlay" class="activity-overlay" aria-label="Agent activity" data-mood="unavailable">
+    <button id="activity-interact" aria-label="Collapse agent overlay" aria-expanded="true" aria-controls="activity-details" aria-describedby="activity-move-help"></button>
+    <span id="activity-move-help" class="sr-only">Drag anywhere to move. Click or press Space to expand or minimize. Arrow keys move, Home resets position, Escape hides.</span>
+    <div class="activity-summary">
+    <div class="activity-character">
+      <canvas id="activity-pet" class="activity-pet" role="img" aria-label="Comet is waiting for activity data"></canvas>
+    </div>
+    <div class="activity-counter"><strong id="activity-running">—</strong><span>Running</span></div>
+    <div class="activity-counter"><strong id="activity-waiting">—</strong><span>Waiting</span></div>
+    </div>
+    <div id="activity-details" class="activity-details">
+      <span class="sr-only">Average running agents</span>
+      <dl class="activity-averages"><div><dt>30 min</dt><dd id="activity-30m">—</dd></div><div><dt>1 hour</dt><dd id="activity-1h">—</dd></div><div><dt>3 hours</dt><dd id="activity-3h">—</dd></div></dl>
+    </div>
+    <p id="activity-status" class="activity-status" role="status" hidden></p>
+  </aside>
+</body></html>

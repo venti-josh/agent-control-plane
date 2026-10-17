@@ -263,6 +263,10 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True,
     def tasks():
         return service.list_tasks()
 
+    @app.get("/overlay", include_in_schema=False)
+    def overlay_page():
+        return FileResponse(Path(__file__).parent / "static" / "activity.html")
+
     @app.get("/api/activity")
     def activity():
         return Activity(store).summary()

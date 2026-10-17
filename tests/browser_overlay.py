@@ -39,14 +39,22 @@ def main():
                 page.clock.install()
                 errors = []
                 page.on('pageerror', lambda error: errors.append(str(error)))
-                page.goto(url)
+                page.goto(url + '/overlay')
                 tile = page.locator('#activity-overlay')
                 expect(tile).to_be_visible()
+                assert page.evaluate('getComputedStyle(document.documentElement).backgroundColor') == 'rgba(0, 0, 0, 0)'
                 expect(page.locator('#activity-running')).to_have_text('0')
-                expect(tile).to_have_attribute('data-mood', 'calm')
+                expect(tile).to_have_attribute('data-mood', 'dead')
+                bounds = tile.bounding_box()
+                assert bounds['width'] == bounds['height'], 'Expanded overlay should be square'
                 screenshot_dir = Path(os.getenv('ACP_SCREENSHOT_DIR', tmp))
                 screenshot_dir.mkdir(parents=True, exist_ok=True)
-                page.screenshot(path=str(screenshot_dir / 'calm.png'))
+                page.screenshot(path=str(screenshot_dir / 'dead.png'))
+                pet = page.locator('#activity-pet')
+                expect(pet).to_have_attribute('aria-label', 'Comet is dead: X eyes and a limp tail')
+                dead_frame = pet.evaluate('(el) => el.toDataURL()')
+                page.clock.run_for(250)
+                assert pet.evaluate('(el) => el.toDataURL()') == dead_frame
                 # Real backend history drives every mood, including exact thresholds.
                 for count, mood in [(1, 'sad'), (2, 'happy'), (3, 'rainbow')]:
                     service.create_task(f'Agent {count}', state='todo')
@@ -58,7 +66,10 @@ def main():
                         page.evaluate('activityOverlay.refresh()')
                     # First transition proves the automatic five-second refresh works.
                     expect(tile).to_have_attribute('data-mood', mood, timeout=8000)
-                    page.evaluate('refresh()')
+                    page.clock.run_for(80)
+                    frame = pet.evaluate('(el) => el.toDataURL()')
+                    page.clock.run_for(250)
+                    assert pet.evaluate('(el) => el.toDataURL()') != frame, f'{mood} should animate'
                     page.screenshot(path=str(screenshot_dir / f'{mood}.png'))
                     expect(page.locator('#activity-running')).to_have_text(str(count))
                 expect(page.locator('#activity-30m')).to_have_text('3.00')
@@ -67,24 +78,28 @@ def main():
                 page.evaluate('activityOverlay.refresh()')
                 expect(page.locator('#activity-waiting')).to_have_text('1')
                 # Pointer drag, keyboard move, and persistence across reloads.
-                handle = page.get_by_role('button', name='Move agent overlay')
+                handle = page.locator('#activity-interact')
                 box = handle.bounding_box()
                 page.mouse.move(box['x'] + 30, box['y'] + 15)
                 page.mouse.down()
                 page.mouse.move(120, 200, steps=8)
                 page.mouse.up()
+                expect(page.locator('#activity-details')).to_be_visible()
                 position = tile.bounding_box()
                 handle.focus()
                 page.keyboard.press('ArrowRight')
                 assert tile.bounding_box()['x'] == position['x'] + 16
                 page.get_by_role('button', name='Collapse agent overlay').click()
                 expect(page.locator('#activity-details')).to_be_hidden()
+                bounds = tile.bounding_box()
+                assert bounds['width'] == bounds['height'], 'Minimized overlay should be square'
                 page.reload()
                 expect(page.locator('#activity-details')).to_be_hidden()
                 assert tile.bounding_box()['x'] == position['x'] + 16
                 page.get_by_role('button', name='Expand agent overlay').click()
                 expect(page.locator('#activity-details')).to_be_visible()
-                page.get_by_role('button', name='Hide agent overlay').click()
+                handle.focus()
+                page.keyboard.press('Escape')
                 expect(tile).to_be_hidden()
                 page.reload()
                 expect(tile).to_be_hidden()
@@ -92,6 +107,8 @@ def main():
                 expect(tile).to_be_visible()
                 # Shrinking a viewport must keep all controls reachable.
                 page.set_viewport_size({'width': 320, 'height': 568})
+                # Deliver resize/animation frames before checking the clamped position.
+                page.clock.run_for(100)
                 bounds = tile.bounding_box()
                 assert bounds['x'] >= 0 and bounds['x'] + bounds['width'] <= 320
                 assert bounds['y'] >= 0 and bounds['y'] + bounds['height'] <= 568
@@ -109,13 +126,21 @@ def main():
                 assert bounds['x'] + bounds['width'] <= 320
                 assert bounds['y'] + bounds['height'] <= 568
                 page.emulate_media(reduced_motion='reduce')
-                assert page.locator('.leo-body').evaluate('(el) => getComputedStyle(el).animationName') == 'none'
+                page.clock.run_for(100)
+                still = pet.evaluate('(el) => el.toDataURL()')
+                page.clock.run_for(250)
+                assert pet.evaluate('(el) => el.toDataURL()') == still, 'Reduced motion must freeze canvas'
+                page.emulate_media(reduced_motion='no-preference')
+                page.wait_for_timeout(100)
+                page.clock.run_for(250)
+                assert pet.evaluate('(el) => el.toDataURL()') != still, 'Motion should resume'
                 page.screenshot(path=os.getenv('ACP_SCREENSHOT', str(Path(tmp) / 'overlay.png')))
                 # Failed requests must not present stale counters as current.
                 page.route('**/api/activity', lambda route: route.abort())
                 page.evaluate('activityOverlay.refresh()')
                 expect(page.locator('#activity-status')).to_have_text('Activity unavailable')
                 expect(page.locator('#activity-running')).to_have_text('—')
+                expect(tile).to_have_attribute('data-mood', 'unavailable')
                 page.unroute('**/api/activity')
                 page.evaluate('activityOverlay.refresh()')
                 expect(page.locator('#activity-running')).to_have_text('3')
@@ -142,6 +167,7 @@ def main():
                 page.clock.fast_forward(8100)
                 expect(page.locator('#activity-status')).to_have_text('Activity unavailable')
                 expect(page.locator('#activity-running')).to_have_text('—')
+                expect(tile).to_have_attribute('data-mood', 'unavailable')
                 for route in held:
                     route.abort()
                 page.unroute('**/api/activity')

@@ -2,10 +2,12 @@
 // Preferences stay in this browser; metrics always come from the local ACP server.
 const activityOverlay = (() => {
   const tile = document.getElementById('activity-overlay');
-  const handle = document.getElementById('activity-move');
-  const toggle = document.getElementById('activity-toggle');
+  const handle = document.getElementById('activity-interact');
+  const toggle = handle;
   const restore = document.getElementById('activity-restore');
-  const key = 'acp.activity-overlay.v1';
+  const native = window.webkit?.messageHandlers?.leoOverlay;
+  if (native) document.body.classList.add('native-overlay');
+  const key = native ? 'acp.leo.native.v1' : 'acp.activity-overlay.v1';
   let prefs = {collapsed:false, hidden:false}, pointer = null, inFlight = null;
   try {
     const saved = JSON.parse(localStorage.getItem(key));
@@ -15,9 +17,11 @@ const activityOverlay = (() => {
       y:Number.isFinite(saved.y) ? saved.y : undefined,
     };
   } catch (_) { /* Storage may be disabled or contain an older value. */ }
+  if (native) { prefs.hidden = false; prefs.collapsed = window.leoInitialCollapsed === true; }
   function save() { try { localStorage.setItem(key, JSON.stringify(prefs)); } catch (_) { /* Optional. */ } }
   function position(x = prefs.x, y = prefs.y) {
     if (tile.hidden) return;
+    if (native) { native.postMessage({action:'resize', width:Math.ceil(tile.offsetWidth), height:Math.ceil(tile.offsetHeight), collapsed:prefs.collapsed}); return; }
     const box = tile.getBoundingClientRect(), edge = 12;
     const maxX = Math.max(0, innerWidth - box.width - edge);
     const maxY = Math.max(0, innerHeight - box.height - edge);
@@ -32,31 +36,45 @@ const activityOverlay = (() => {
     document.getElementById('activity-details').hidden = prefs.collapsed;
     toggle.setAttribute('aria-expanded', String(!prefs.collapsed));
     toggle.setAttribute('aria-label', `${prefs.collapsed ? 'Expand' : 'Collapse'} agent overlay`);
-    toggle.textContent = prefs.collapsed ? '+' : '−';
     position(); save();
   }
-  toggle.onclick = () => { prefs.collapsed = !prefs.collapsed; renderPreferences(); };
-  document.getElementById('activity-hide').onclick = () => {
+  function toggleExpanded() { prefs.collapsed = !prefs.collapsed; renderPreferences(); }
+  function hide() {
+    if (native) { native.postMessage({action:'hide'}); return; }
     prefs.hidden = true; renderPreferences(); restore.focus();
-  };
+  }
   restore.onclick = () => { prefs.hidden = false; renderPreferences(); toggle.focus(); refresh(); };
+  handle.addEventListener('click', event => { if (event.detail === 0) toggleExpanded(); });
   handle.addEventListener('pointerdown', event => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || native) return;
     event.preventDefault(); handle.focus();
-    pointer = {id:event.pointerId, x:event.clientX, y:event.clientY, left:prefs.x, top:prefs.y};
-    handle.setPointerCapture(event.pointerId); tile.classList.add('is-dragging');
+    pointer = {id:event.pointerId, x:event.clientX, y:event.clientY, left:prefs.x, top:prefs.y, moved:false};
+    handle.setPointerCapture(event.pointerId);
   });
   handle.addEventListener('pointermove', event => {
     if (!pointer || pointer.id !== event.pointerId) return;
-    position(pointer.left + event.clientX - pointer.x, pointer.top + event.clientY - pointer.y);
+    const dx = event.clientX-pointer.x, dy = event.clientY-pointer.y;
+    if (Math.hypot(dx,dy) >= 4) pointer.moved = true;
+    if (pointer.moved) { tile.classList.add('is-dragging'); position(pointer.left+dx,pointer.top+dy); }
   });
-  function endDrag() { pointer = null; tile.classList.remove('is-dragging'); save(); }
+  function endDrag(event) {
+    const click = pointer && !pointer.moved && event.type === 'pointerup';
+    pointer = null; tile.classList.remove('is-dragging'); save();
+    if (click) toggleExpanded();
+  }
   handle.addEventListener('pointerup', endDrag);
   handle.addEventListener('pointercancel', endDrag);
   handle.addEventListener('lostpointercapture', endDrag);
   handle.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { event.preventDefault(); hide(); return; }
     const step = event.shiftKey ? 4 : 16;
     const moves = {ArrowLeft:[-step,0], ArrowRight:[step,0], ArrowUp:[0,-step], ArrowDown:[0,step]};
+    if (native && (event.key === 'Home' || moves[event.key])) {
+      event.preventDefault();
+      if (event.key === 'Home') native.postMessage({action:'reset'});
+      else native.postMessage({action:'move', dx:moves[event.key][0], dy:moves[event.key][1]});
+      return;
+    }
     if (event.key === 'Home') { event.preventDefault(); position(null, null); save(); }
     else if (moves[event.key]) {
       event.preventDefault(); const [dx,dy] = moves[event.key]; position(prefs.x + dx, prefs.y + dy); save();
@@ -81,27 +99,27 @@ const activityOverlay = (() => {
         .every(n => Number.isFinite(n) && n >= 0)) throw new Error('Invalid activity');
       document.getElementById('activity-running').textContent = data.running;
       document.getElementById('activity-waiting').textContent = data.waiting_on_input;
-      document.getElementById('activity-children').textContent = `Includes ${data.subagents} running subagent${data.subagents === 1 ? '' : 's'}`;
       for (const period of ['30m','1h','3h']) document.getElementById(`activity-${period}`).textContent = data.averages[period].toFixed(2);
       const average = data.averages['30m'];
-      const mood = average >= 3 ? 'rainbow' : average >= 2 ? 'happy' : average >= 1 ? 'sad' : 'calm';
+      const mood = average >= 3 ? 'rainbow' : average >= 2 ? 'happy' : average >= 1 ? 'sad' : 'dead';
       tile.dataset.mood = mood;
-      const moods = {rainbow:['Rainbow overdrive', 'Leo is ecstatic, surrounded by rainbows'], happy:['In a happy rhythm', 'Leo is happy and bouncing'], sad:['Could use company', 'Leo looks sad and disappointed'], calm:['Looking good, Leo', 'Leo is calm and looking good']};
-      document.getElementById('activity-mood').textContent = moods[mood][0];
-      document.getElementById('activity-pet').setAttribute('aria-label', moods[mood][1]);
-      status.textContent = 'Live · updates every 5s';
+      const moods = {rainbow:'Comet is ecstatic with a rainbow trail', happy:'Comet is happy and flying', sad:'Comet is sad with drooping ears and falling tears', dead:'Comet is dead: X eyes and a limp tail'};
+      cometPet.setMood(mood);
+      document.getElementById('activity-pet').setAttribute('aria-label', moods[mood]);
+      status.textContent = ''; status.hidden = true;
       tile.classList.remove('is-unavailable');
+      native?.postMessage({action:'metrics', data:{...data, mood}});
     } catch (_) {
-      status.textContent = 'Activity unavailable'; tile.classList.add('is-unavailable');
+      status.textContent = 'Activity unavailable'; status.hidden = false; tile.classList.add('is-unavailable');
       for (const id of ['running','waiting','30m','1h','3h']) document.getElementById(`activity-${id}`).textContent = '—';
-      document.getElementById('activity-children').textContent = 'Reconnecting to local ACP';
-      document.getElementById('activity-mood').textContent = 'Taking a little breather';
-      tile.dataset.mood = 'calm';
-      document.getElementById('activity-pet').setAttribute('aria-label', 'Leo is resting; activity is unavailable');
+      tile.dataset.mood = 'unavailable';
+      cometPet.setMood('unavailable');
+      native?.postMessage({action:'metrics', data:{unavailable:true}});
+      document.getElementById('activity-pet').setAttribute('aria-label', 'Comet is waiting; activity is unavailable');
     } finally { clearTimeout(timeout); }
   }
-  renderPreferences(); refresh();
-  setInterval(() => { if (!document.hidden && !tile.hidden) refresh(); }, 5000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && !tile.hidden) refresh(); });
-  return {refresh};
+  renderPreferences(); native?.postMessage({action:'ready'}); refresh();
+  setInterval(() => { if (native || (!document.hidden && !tile.hidden)) refresh(); }, 5000);
+  document.addEventListener('visibilitychange', () => { if (native || (!document.hidden && !tile.hidden)) refresh(); });
+  return {refresh, toggle:toggleExpanded};
 })();
