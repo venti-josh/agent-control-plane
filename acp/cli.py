@@ -103,7 +103,8 @@ def main() -> None:
     ds.add_parser('disconnect')
     connect = ds.add_parser('connect')
     connect.add_argument('--thread', required=True)
-    for name in ('claim', 'prepare', 'bind', 'started', 'complete', 'acknowledge', 'action', 'steering', 'steered'):
+    for name in ('claim', 'prepare', 'bind', 'started', 'complete', 'acknowledge', 'action',
+                 'steering', 'steered', 'recover'):
         item = ds.add_parser(name)
         item.add_argument('run_id')
         if name in ('bind', 'started', 'complete', 'acknowledge', 'action', 'steered'):

@@ -13,13 +13,19 @@ async function api(path, method='GET', body) {
 }
 const attempt = (fn) => async (event) => { event?.preventDefault(); try { await fn(event); } catch (error) { toast(error.message); } };
 function safeLink(url, title=url) { return /^https?:\/\//i.test(url) ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>` : `<span>${esc(title)}</span>`; }
+function runLabel(status, startedAt, desktopPhase) {
+  if (status === 'running' && !startedAt && desktopPhase) {
+    return desktopPhase === 'dispatched' ? 'Awaiting dispatcher' : 'Awaiting task start';
+  }
+  return status || 'Not started';
+}
 function drawBoard() {
   $('task-count').textContent = `${tasks.length} task${tasks.length === 1 ? '' : 's'}`;
-  const running = tasks.filter(t => t.run_status === 'running').length;
+  const running = tasks.filter(t => t.run_status === 'running' && t.run_started_at).length;
   $('running-count').textContent = running ? `${running} running` : '';
   $('board').innerHTML = config.states.map(state => {
     const cards = tasks.filter(t => t.state === state.id);
-    return `<div class="lane" data-state="${state.id}" aria-label="${state.label}"><div class="lane-heading"><span class="lane-dot"></span>${state.label}<span class="lane-count">${cards.length}</span></div>${cards.map(t => `<button class="card" draggable="true" data-id="${t.id}" aria-label="Open ${esc(t.title)}"><span class="card-top"><span>${esc(t.linear_url ? 'LINEAR' : 'TASK')} ${t.id.slice(0,6).toUpperCase()}</span><span>···</span></span><span class="card-title">${esc(t.title)}</span><span class="card-desc">${esc(t.description)}</span><span class="card-bottom"><span class="provider ${t.provider}">${labels[t.provider]}</span><span class="run-status ${esc(t.run_status)}">${esc(t.run_status || 'Not started')}</span></span></button>`).join('') || '<div class="empty-lane">Drop a task here</div>'}</div>`;
+    return `<div class="lane" data-state="${state.id}" aria-label="${state.label}"><div class="lane-heading"><span class="lane-dot"></span>${state.label}<span class="lane-count">${cards.length}</span></div>${cards.map(t => `<button class="card" draggable="true" data-id="${t.id}" aria-label="Open ${esc(t.title)}"><span class="card-top"><span>${esc(t.linear_url ? 'LINEAR' : 'TASK')} ${t.id.slice(0,6).toUpperCase()}</span><span>···</span></span><span class="card-title">${esc(t.title)}</span><span class="card-desc">${esc(t.description)}</span><span class="card-bottom"><span class="provider ${t.provider}">${labels[t.provider]}</span><span class="run-status ${esc(t.run_status)}">${esc(runLabel(t.run_status, t.run_started_at, t.desktop_phase))}</span></span></button>`).join('') || '<div class="empty-lane">Drop a task here</div>'}</div>`;
   }).join('');
   document.querySelectorAll('.card').forEach(card => {
     card.onclick = attempt(() => openTask(card.dataset.id));
@@ -79,7 +85,23 @@ function drawTask() {
   $('task-comments').innerHTML = task.comments.map(c => `<div class="comment"><div class="comment-author"><strong>${esc(c.author)}${c.in_reply_to ? ' · reply' : ''}</strong><span>${time(c.created_at)}</span></div><div class="comment-body">${esc(c.body)}</div></div>`).join('') || '<p class="hint">Plans, questions, and feedback appear here.</p>';
   $('resume-task').hidden = task.state !== 'waiting_on_input';
   $('request-changes').hidden = task.state !== 'ready_for_review';
-  $('task-runs').innerHTML = `<p class="hint">Session: ${esc(task.session_id || 'Not started')}<br>Workspace: ${esc(task.workspace || 'Managed by the agent')}</p>` + task.runs.map(r => `<div class="run"><span class="run-status ${esc(r.status)}">${esc(r.status)}</span><code>${r.id.slice(0,8)}</code><span>${esc(r.trigger)}</span><a href="/api/runs/${r.id}/log" target="_blank" rel="noopener">View log ↗</a></div>`).join('');
+  $('task-runs').innerHTML = `<p class="hint">Session: ${esc(task.session_id || 'Not started')}<br>Workspace: ${esc(task.workspace || 'Managed by the agent')}</p>` + task.runs.map(r => {
+    const d = r.desktop;
+    const waiting = r.status === 'running' && !r.stop_requested && !r.started_at && d;
+    const timing = d ? `<p class="hint">Dispatched: ${d.dispatched_at ? time(d.dispatched_at) : 'Unknown'} · Queue accepted: ${d.queue_accepted_at ? time(d.queue_accepted_at) : 'Not confirmed'} · Claimed: ${d.claimed_at ? time(d.claimed_at) : 'Not yet'} · Started: ${r.started_at ? time(r.started_at) : 'Not yet'}</p>` : '';
+    const recovery = waiting ? `<p class="hint">${d.phase === 'dispatched' ? 'Delivery is pending. Retry delivery keeps this same run. If it remains waiting, open the connected ACP dispatcher chat in Codex and resolve any resume or approval request.' : 'Inspect the dispatcher and retained task chat for approval or interrupted handoff. Do not resend the task prompt.'}</p>${d.phase === 'dispatched' && d.queue_accepted_at ? `<button type="button" data-recover-run="${esc(r.id)}">Retry delivery</button>` : ''}` : '';
+    return `<div class="run"><span class="run-status ${esc(r.status)}">${esc(runLabel(r.status, r.started_at, d?.phase))}</span><code>${r.id.slice(0,8)}</code><span>${esc(r.trigger)}</span><a href="/api/runs/${r.id}/log" target="_blank" rel="noopener">View log ↗</a></div>${timing}${recovery}`;
+  }).join('');
+  document.querySelectorAll('[data-recover-run]').forEach(button => {
+    button.onclick = attempt(async () => {
+      button.disabled = true;
+      try {
+        await api(`/desktop/runs/${button.dataset.recoverRun}/recover`, 'POST', {});
+        toast('Delivery queued for the same run. Waiting for dispatcher claim.');
+        await refresh();
+      } finally { button.disabled = false; }
+    });
+  });
 }
 async function postComment(mode) {
   if (!selected) return;
@@ -132,9 +154,9 @@ async function linearBusy(id, work) {
 async function updateDesktopStatus() {
   const state = await api('/desktop');
   config.codex_desktop = state.connected;
-  $('desktop-badge').textContent = state.connected ? 'Connected' : 'CLI mode';
+  $('desktop-badge').textContent = state.connected ? 'Configured' : 'CLI mode';
   $('desktop-status').textContent = state.connected
-    ? 'Tasks run in Codex app chats. Keep Codex open. Stop an active app turn in Codex; cancelling here revokes its ACP results.'
+    ? `Dispatcher chat: ${state.thread_id}. A saved connection does not confirm readiness. Keep Codex open; inspect this chat if delivery is delayed. Cancelling in ACP revokes results; stop active turns in Codex.`
     : 'Paste the setup prompt into Codex once. It connects a dispatcher chat that creates and continues task chats automatically.';
   $('desktop-thread').value = state.thread_id || '';
   $('desktop-instructions').value = state.instructions;

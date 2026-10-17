@@ -149,6 +149,10 @@ class Store:
             run_columns = {r['name'] for r in db.execute('PRAGMA table_info(runs)')}
             if 'activity_finished_at' not in run_columns:
                 db.execute('ALTER TABLE runs ADD COLUMN activity_finished_at REAL')
+            desktop_columns = {r['name'] for r in db.execute('PRAGMA table_info(desktop_runs)')}
+            for name in ('dispatched_at', 'queue_accepted_at', 'claimed_at', 'delayed_at', 'recovery_at'):
+                if name not in desktop_columns:
+                    db.execute(f'ALTER TABLE desktop_runs ADD COLUMN {name} REAL')
             child_columns = {r['name'] for r in db.execute('PRAGMA table_info(subagent_activity)')}
             if 'state' not in child_columns:
                 db.execute("ALTER TABLE subagent_activity ADD COLUMN state TEXT NOT NULL DEFAULT 'running'")

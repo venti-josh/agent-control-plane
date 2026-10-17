@@ -217,6 +217,28 @@ The UI supports drag-and-drop, a keyboard-accessible lane selector, comments, an
 
 ## Run tasks in the Codex app
 
+Queue acceptance, dispatcher claim, and task start are separate milestones. A saved
+connection means **configured**, not ready. Accepted work stays active while awaiting
+the dispatcher or task check-in, including across a Codex app restart. After two
+minutes ACP adds one actionable delay comment; it does not expire the approved work.
+The execution timeout begins only when the task chat checks in. Task details show
+the milestones, and pending desktop work is excluded from the board's running count.
+
+For an unclaimed dispatch, use **Retry delivery** in task details, or
+`acp desktop recover RUN_ID`. This queues delivery for the same active run, with a
+30-second retry throttle. It does not create a new run or reapply approval. If Codex
+still has not claimed it, open the configured dispatcher chat and resolve its resume
+or approval request. Queueing alone is not a documented desktop wake guarantee.
+Once claimed, inspect the dispatcher and retained task chat instead: recovery never
+resends a claimed task prompt. A duplicate dispatcher message can only observe the
+bound chat or report an uncertain handoff. Canceled and terminal runs stay revoked;
+retry those through the normal answer-and-resume flow to create a new run.
+
+This handles a **Codex app** restart while ACP remains running. Restarting the ACP
+service still interrupts active runs and requires an explicit retry, as before.
+Waiting desktop work retains the existing serialized dispatcher slot until it starts
+or is canceled; the UI never reports waiting time as task execution.
+
 Available in v0.1.2 and later. Earlier releases use CLI execution and ACP-managed worktrees.
 
 Install and sign in to Codex, then open ACP **Settings → Codex app → Copy setup

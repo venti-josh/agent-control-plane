@@ -126,11 +126,43 @@ def main():
                 page.locator('#subscription-list button').click()
                 expect(page.locator('#subscription-list')).to_contain_text('No outgoing subscriptions.')
                 page.locator('[data-close="settings-dialog"]').click()
+                # Synthetic desktop transport, real API and UI: delivery is not execution.
+                from uuid import uuid4
+                from acp.desktop import DesktopBridge
+                dispatcher = DesktopBridge(svc)
+                dispatcher.connect(str(uuid4()))
+                fake_codex = Path(tmp) / 'codex'
+                fake_codex.write_text('#!/bin/sh\nprintf "Queued browser test\\n"\n')
+                fake_codex.chmod(0o755)
+                svc.settings.codex_command = str(fake_codex)
+                app_task = svc.create_task('Delayed dispatcher', provider='codex', state='todo')
+                page.get_by_role('button', name='Open Delayed dispatcher', exact=True).click()
+                expect(page.locator('#task-runs')).to_contain_text('Awaiting dispatcher')
+                expect(page.locator('#running-count')).to_have_text('')
+                page.get_by_text('Runs & session', exact=True).click()
+                page.get_by_role('button', name='Retry delivery', exact=True).click()
+                expect(page.locator('#toast')).to_contain_text('same run')
+                observed = svc.get_task(app_task['id'])
+                assert len(observed['runs']) == 1
+                job = observed['runs'][0]
+                assert job['desktop']['recovery_at'] and job['started_at'] is None
+                screenshot = os.getenv('ACP_RECOVERY_SCREENSHOT')
+                if screenshot:
+                    page.screenshot(path=screenshot, full_page=True)
+                dispatcher.claim(job['id'])
+                expect(page.locator('#task-runs')).to_contain_text('Awaiting task start')
+                expect(page.get_by_role('button', name='Retry delivery', exact=True)).to_have_count(0)
+                session = str(uuid4())
+                dispatcher.started(job['id'], session)
+                expect(page.locator('#running-count')).to_have_text('1 running')
+                dispatcher.action(job['id'], session, 'review', text='Synthetic browser check complete')
+                dispatcher.complete(job['id'], session)
+                page.locator('[data-close="task-dialog"]').click()
                 page.set_viewport_size({'width':390,'height':844})
                 expect(page.locator('.lane')).to_have_count(7)
                 assert not errors, errors
                 browser.close()
-                print('Browser smoke passed (transport=' + ('test bridge' if os.getenv('ACP_BROWSER_BRIDGE') == '1' else 'native') + '): 7 lanes, live events, input/review loop, create/move, escaped text, subscriptions, mobile viewport.')
+                print('Browser smoke passed (transport=' + ('test bridge' if os.getenv('ACP_BROWSER_BRIDGE') == '1' else 'native') + '): 7 lanes, live events, input/review loop, create/move, escaped text, subscriptions, dispatcher delay/recovery/start, mobile viewport.')
         finally:
             server.should_exit = True
             thread.join(timeout=10)

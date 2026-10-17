@@ -85,8 +85,75 @@ class DesktopBridge:
                           (task['id'], run_id)).fetchone():
                 raise DomainError('A previous app run is still unacknowledged. Stop or finish it in Codex, '
                                   'then have the dispatcher acknowledge its completion before retrying.')
-            db.execute("INSERT INTO desktop_runs(run_id,phase) VALUES(?,'dispatched')", (run_id,))
+            db.execute("INSERT INTO desktop_runs(run_id,phase,dispatched_at) VALUES(?,'dispatched',?)",
+                       (run_id, time.time()))
         return True
+
+    async def queue(self, run_id):
+        # Queue acceptance is delivery evidence, never proof of readiness or execution.
+        self.active(run_id)
+        connection = self.status()
+        if not connection['connected']:
+            raise DomainError('Connect the Codex dispatcher before retrying delivery.')
+        env = {k: v for k, v in os.environ.items() if not k.startswith('LINEAR_')
+               and k not in {'GITHUB_WEBHOOK_SECRET', 'GITHUB_TOKEN'}}
+        process = await asyncio.create_subprocess_exec(
+            self.service.settings.codex_command, 'queue', '--thread', connection['thread_id'],
+            '--message', self.dispatcher_prompt(run_id), env=env,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), 30)
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+        log = self.service.settings.data_dir / 'logs' / f'{run_id}.jsonl'
+        log.parent.mkdir(exist_ok=True)
+        with log.open('a') as output:
+            output.write(json.dumps({'at': time.time(), 'desktop_dispatch': stdout.decode(errors='replace'),
+                                     'error': stderr.decode(errors='replace')}) + '\n')
+        if process.returncode:
+            raise DomainError('Codex queue failed. Check Codex installation and the run log.', 502)
+        with self.store.transaction() as db:
+            # Delivery can finish after cancellation; record it without reviving the run.
+            db.execute('UPDATE desktop_runs SET queue_accepted_at=coalesce(queue_accepted_at,?) WHERE run_id=?',
+                       (time.time(), run_id))
+            run = db.execute('SELECT task_id FROM runs WHERE id=?', (run_id,)).fetchone()
+            self.service._event(db, 'desktop.queued', run['task_id'], {'run_id': run_id})
+        return {'run_id': run_id, 'queued': True}
+
+    async def recover(self, run_id):
+        with self.store.transaction() as db:
+            self._require_active(db, run_id)
+            entry = db.execute('SELECT * FROM desktop_runs WHERE run_id=?', (run_id,)).fetchone()
+            if not entry or entry['phase'] != 'dispatched':
+                raise DomainError('This run is already claimed or was not dispatched. Inspect the retained '
+                                  'chat in Codex; do not resend its task prompt.')
+            if entry['queue_accepted_at'] is None:
+                raise DomainError('Wait for the initial delivery to finish before retrying.')
+            if entry['recovery_at'] is not None and time.time() - entry['recovery_at'] < 30:
+                raise DomainError('Delivery recovery was just requested. Wait 30 seconds before retrying.')
+            db.execute('UPDATE desktop_runs SET recovery_at=? WHERE run_id=?', (time.time(), run_id))
+        # A concurrent claim can only turn this message into observe/uncertain, never another prompt.
+        return await self.queue(run_id)
+
+    def delayed(self, run_id):
+        with self.store.transaction() as db:
+            task, run = self._require_active(db, run_id)
+            entry = db.execute('SELECT * FROM desktop_runs WHERE run_id=?', (run_id,)).fetchone()
+            if run['started_at'] or entry['delayed_at'] is not None:
+                return
+            db.execute('UPDATE desktop_runs SET delayed_at=? WHERE run_id=?', (time.time(), run_id))
+            if entry['phase'] == 'dispatched':
+                message = ('Awaiting Codex dispatcher: the queue accepted this run, but the dispatcher has '
+                           'not claimed it. The run remains active. Open ACP task details, expand Runs & session, and use Retry delivery; '
+                           'if still waiting, open the connected ACP dispatcher chat in Codex and resolve any '
+                           'resume or approval request. Do not create another task or reset its session.')
+            else:
+                message = ('Awaiting Codex task start: the dispatcher claimed this run, but its task chat has '
+                           'not checked in. The run remains active. Inspect the dispatcher and retained task '
+                           'chat in Codex for approval or interrupted handoff; do not resend the task prompt.')
+            self.service._comment(db, task['id'], message, 'system', 'system')
 
     def claim(self, run_id):
         task, _ = self.active(run_id)
@@ -102,7 +169,9 @@ class DesktopBridge:
                                   "WHERE r.task_id=? AND d.thread_id=? AND d.phase='complete'",
                                   (task['id'], task['session_id'])).fetchone()
             session = task['session_id'] if previous else None
-            db.execute("UPDATE desktop_runs SET phase='claimed',thread_id=? WHERE run_id=?", (session, run_id))
+            db.execute("UPDATE desktop_runs SET phase='claimed',thread_id=?,claimed_at=? WHERE run_id=?",
+                       (session, time.time(), run_id))
+            self.service._event(db, 'desktop.claimed', task['id'], {'run_id': run_id})
         from .repositories import catalog
         return {'action': 'resume' if session else 'create', 'session_id': session,
                 'run_id': run_id, 'task': task,
@@ -323,35 +392,22 @@ class DesktopRunner:
                 raise DomainError('Reconnect the Codex dispatcher to continue this app chat, or reset its session first.')
             return await CLIRunner().run(service, task, run)
         bridge.dispatch(run['id'])
-        env = {k: v for k, v in os.environ.items() if not k.startswith('LINEAR_')
-               and k not in {'GITHUB_WEBHOOK_SECRET', 'GITHUB_TOKEN'}}
-        process = await asyncio.create_subprocess_exec(
-            service.settings.codex_command, 'queue', '--thread', connection['thread_id'],
-            '--message', bridge.dispatcher_prompt(run['id']), env=env,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), 30)
-        finally:
-            if process.returncode is None:
-                process.kill()
-                await process.wait()
-        log = service.settings.data_dir / 'logs' / f"{run['id']}.jsonl"
-        log.parent.mkdir(exist_ok=True)
-        log.write_text(json.dumps({'desktop_dispatch': stdout.decode(errors='replace'),
-                                  'error': stderr.decode(errors='replace')}) + '\n')
-        if process.returncode:
-            raise RuntimeError('Codex queue failed. Check Codex installation and the run log.')
+        await bridge.queue(run['id'])
         queued_at = time.monotonic()
-        deadline = queued_at + service.settings.run_timeout_seconds
+        deadline = None
         while True:
             current = service.store.one('SELECT * FROM runs WHERE id=?', (run['id'],))
             if current['status'] != 'running' or current['stop_requested']:
                 return
             now = time.monotonic()
-            if not current['started_at'] and now - queued_at >= min(120, service.settings.run_timeout_seconds):
-                raise TimeoutError('The Codex app chat did not start within two minutes. Open Codex and inspect '
-                                   'the dispatcher connection and any approval requests before retrying.')
-            if now >= deadline:
-                raise TimeoutError('No completed app result before the run timeout. Open Codex and inspect '
-                                   'the dispatcher/task chat. Stop any active turn there before retrying.')
+            if not current['started_at']:
+                if now - queued_at >= 120:
+                    bridge.delayed(run['id'])
+            else:
+                if deadline is None:
+                    elapsed = max(0, time.time() - current['started_at'])
+                    deadline = now + max(0, service.settings.run_timeout_seconds - elapsed)
+                if now >= deadline:
+                    raise TimeoutError('No completed app result before the execution timeout. Open Codex and '
+                                       'inspect the task chat. Stop any active turn there before retrying.')
             await asyncio.sleep(service.settings.poll_seconds)

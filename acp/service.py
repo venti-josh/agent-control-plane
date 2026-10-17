@@ -244,11 +244,16 @@ class TaskService:
                 "SELECT * FROM runs WHERE task_id=? ORDER BY created_at DESC", (task_id,))]
             for run in task["runs"]:
                 run["inputs"] = json.loads(run["inputs"])
+                run["desktop"] = row(db.execute('SELECT * FROM desktop_runs WHERE run_id=?',
+                                                 (run['id'],)).fetchone())
             return task
 
     def list_tasks(self) -> list[dict]:
-        return self.store.all("SELECT t.*, (SELECT status FROM runs r WHERE r.task_id=t.id "
-                              "ORDER BY created_at DESC LIMIT 1) AS run_status FROM tasks t WHERE t.hidden=0 ORDER BY created_at DESC")
+        return self.store.all("SELECT t.*, r.status AS run_status, r.started_at AS run_started_at, "
+                              "d.phase AS desktop_phase FROM tasks t LEFT JOIN runs r ON r.id="
+                              "(SELECT id FROM runs WHERE task_id=t.id ORDER BY created_at DESC LIMIT 1) "
+                              "LEFT JOIN desktop_runs d ON d.run_id=r.id "
+                              "WHERE t.hidden=0 ORDER BY t.created_at DESC")
 
     def move_task(self, task_id: str, state: str, comment: str | None = None,
                   expected_version: int | None = None, origin: str = "api") -> dict:
