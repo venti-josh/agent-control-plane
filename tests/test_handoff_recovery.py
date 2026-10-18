@@ -38,7 +38,8 @@ async def test_resume_without_delivery_is_reconciled_not_observed(service, tmp_p
     bridge, task, run = dispatched(service, tmp_path)
     bridge.claim(run['id']); session = str(uuid4()); bridge.started(run['id'], session)
     bridge.action(run['id'], session, 'input', text='Continue?'); bridge.complete(run['id'], session)
-    service.add_comment(task['id'], 'Approved', resume=True)
+    service.add_comment(task['id'], 'Approved', resume=True,
+                        in_reply_to=service.get_task(task['id'])['blocker_comment_id'])
     following = service.claim_next(); bridge.dispatch(following['id'])
     assert bridge.claim(following['id'])['action'] == 'resume'
     assert (await bridge.prepare(following['id']))['action'] == 'send'
@@ -208,3 +209,64 @@ async def test_restart_preserves_exhausted_delivery_budget_and_future_deadline(s
         assert service.store.one('SELECT next_attempt_at FROM desktop_runs WHERE run_id=?',(run['id'],))['next_attempt_at'] == deadline
     finally:
         await worker.stop()
+
+
+@pytest.mark.parametrize('result', ['input', 'review'])
+async def test_acknowledgement_delay_preserves_submitted_result_and_followup(service, tmp_path, monkeypatch, result):
+    import time
+    bridge, task, run = dispatched(service, tmp_path)
+    bridge.claim(run['id']); session = str(uuid4()); bridge.started(run['id'], session)
+    bridge.action(run['id'], session, result, text='Completed turn')
+    if result == 'review':
+        followup = service.request_changes(task['id'], 'Approved follow-up')['run_id']
+    else:
+        blocker = service.get_task(task['id'])['blocker_comment_id']
+        service.add_comment(task['id'], 'Approved follow-up', resume=True, in_reply_to=blocker)
+        followup = service.store.one("SELECT id FROM runs WHERE status='queued'")['id']
+    with service.store.transaction() as db:
+        db.execute('UPDATE runs SET started_at=?,activity_finished_at=? WHERE id=?',
+                   (time.time() - service.settings.run_timeout_seconds - 10, time.time() - 130, run['id']))
+    async def queue(*args): return {'queued': True}
+    monkeypatch.setattr(DesktopBridge, 'queue', queue)
+    worker = Worker(service)
+    pending = asyncio.create_task(worker.run_once(run))
+    try:
+        await asyncio.sleep(.08)
+        current = service.get_task(task['id'])
+        assert next(r for r in current['runs'] if r['id'] == run['id'])['status'] == 'running'
+        assert next(r for r in current['runs'] if r['id'] == followup)['status'] == 'queued'
+        assert bridge.status()['state'] == 'awaiting_acknowledgment'
+        assert bridge.status()['requires_attention']
+        assert len([c for c in current['comments'] if 'Awaiting dispatcher acknowledgment' in c['body']]) == 1
+        bridge.complete(run['id'], session)
+        await pending
+        assert service.claim_next()['id'] == followup
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
+async def test_result_committed_during_delivery_retry_wins_over_timeout(service, tmp_path, monkeypatch):
+    import time
+    bridge, task, run = dispatched(service, tmp_path)
+    bridge.claim(run['id']); session = str(uuid4()); bridge.started(run['id'], session)
+    with service.store.transaction() as db:
+        db.execute('UPDATE runs SET started_at=? WHERE id=?', (time.time() - service.settings.run_timeout_seconds - 10, run['id']))
+        db.execute("UPDATE desktop_runs SET queue_error='transient',next_attempt_at=0 WHERE run_id=?", (run['id'],))
+    async def queue(*args):
+        bridge.action(run['id'], session, 'input', text='Approve A?')
+        blocker = service.get_task(task['id'])['blocker_comment_id']
+        service.add_comment(task['id'], 'Approved A', resume=True, in_reply_to=blocker)
+        with service.store.transaction() as db:
+            db.execute('UPDATE desktop_runs SET next_attempt_at=NULL WHERE run_id=?', (run['id'],))
+        return {'queued': True}
+    monkeypatch.setattr(DesktopBridge, 'queue', queue)
+    pending = asyncio.create_task(Worker(service).run_once(run))
+    try:
+        await asyncio.sleep(.08)
+        current = service.get_task(task['id'])
+        assert {r['status'] for r in current['runs']} == {'running', 'queued'}
+        bridge.complete(run['id'], session)
+        await pending
+    finally:
+        pending.cancel(); await asyncio.gather(pending, return_exceptions=True)

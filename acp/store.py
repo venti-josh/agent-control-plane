@@ -157,7 +157,7 @@ class Store:
             if 'activity_finished_at' not in run_columns:
                 db.execute('ALTER TABLE runs ADD COLUMN activity_finished_at REAL')
             desktop_columns = {r['name'] for r in db.execute('PRAGMA table_info(desktop_runs)')}
-            for name in ('dispatched_at', 'queue_accepted_at', 'claimed_at', 'delayed_at', 'recovery_at'):
+            for name in ('dispatched_at', 'queue_accepted_at', 'claimed_at', 'delayed_at', 'recovery_at', 'ack_delayed_at'):
                 if name not in desktop_columns:
                     db.execute(f'ALTER TABLE desktop_runs ADD COLUMN {name} REAL')
             if 'send_started_at' not in desktop_columns:

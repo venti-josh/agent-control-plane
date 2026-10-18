@@ -147,13 +147,15 @@ def test_regular_comment_while_waiting_resumes_for_evaluation(service):
     assert service.get_task(task['id'])['state'] == 'in_progress'
 
 
-def test_reply_to_older_comment_still_resumes_waiting_task(service):
+def test_reply_to_older_comment_is_retained_without_resuming_waiting_task(service):
     task, run = started(service)
     c = service.add_comment(task['id'], 'Plan', run_id=run['id'])
     service.request_input(task['id'], 'Current question?', run['id'])
     answer = service.add_comment(task['id'], 'More context', in_reply_to=c['id'], resume=True)
     service.finish_run(run['id'])
-    assert service.claim_next()['inputs'] == [{'trigger': 'input', 'comment_id': answer['id']}]
+    assert service.claim_next() is None
+    assert answer['resume_queued'] is False
+    assert service.get_task(task['id'])['comments'][-1]['id'] == answer['id']
 
 
 def test_wrong_task_reply_rejected(service):
@@ -277,3 +279,30 @@ def test_completing_waiting_task_cancels_queued_work_and_fences_agent(service):
     assert next(r for r in done['runs'] if r['id'] == run['id'])['stop_requested']
     with pytest.raises(DomainError, match='no longer active'):
         service.add_comment(task['id'], 'Late response', run_id=run['id'])
+
+
+def test_explicit_answer_requires_the_expected_blocker(service):
+    task, run = started(service)
+    service.request_input(task['id'], 'Current question?', run['id'])
+    service.finish_run(run['id'])
+    with pytest.raises(DomainError, match='blocker'):
+        service.add_comment(task['id'], 'Approved', resume=True)
+    assert service.claim_next() is None
+
+
+def test_delayed_answer_to_prior_blocker_never_approves_new_question(service):
+    task, run = started(service)
+    service.request_input(task['id'], 'Approve A?', run['id']); service.finish_run(run['id'])
+    old = service.get_task(task['id'])['blocker_comment_id']
+    service.add_comment(task['id'], 'Yes to A', resume=True, in_reply_to=old)
+    followup = service.claim_next(); service.mark_started(followup['id'])
+    service.request_input(task['id'], 'Approve B?', followup['id']); service.finish_run(followup['id'])
+    current = service.get_task(task['id'])['blocker_comment_id']
+    reply = service.add_comment(task['id'], 'Delayed A answer', resume=True, in_reply_to=old,
+                                idempotency_key='stale-A')
+    assert reply['resume_queued'] is False
+    assert reply['in_reply_to'] == old and current != old
+    assert service.claim_next() is None
+    assert service.add_comment(task['id'], 'Delayed A answer', resume=True, in_reply_to=old,
+                               idempotency_key='stale-A') == reply
+    assert len(service.get_task(task['id'])['runs']) == 2

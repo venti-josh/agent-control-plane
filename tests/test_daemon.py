@@ -55,8 +55,8 @@ def test_setup_preserves_config_and_service_runs_full_demo_flow(cli):
     task = json.loads(cli('create', 'Installed demo', '--provider', 'demo',
                           '--description', '[ask]', '--state', 'todo').stdout)
     task_id = task['id']
-    wait_task(cli, task_id, 'waiting_on_input')
-    cli('answer', task_id, 'Use a greeting')
+    blocked = wait_task(cli, task_id, 'waiting_on_input')
+    cli('answer', task_id, 'Use a greeting', '--blocker-id', blocked['blocker_comment_id'])
     wait_task(cli, task_id, 'ready_for_review')
     cli('changes', task_id, 'Improve the greeting')
     reviewed = wait_task(cli, task_id, 'ready_for_review')

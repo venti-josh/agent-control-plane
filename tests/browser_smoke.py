@@ -93,6 +93,25 @@ def main():
                 expect(page.locator('#resume-task')).to_be_hidden()
                 assert svc.get_task(blocked['id'])['state'] == 'done'
                 page.locator('[data-close="task-dialog"]').click()
+                # A live refresh must not retarget an answer already drafted for an older blocker.
+                draft = svc.create_task('Draft blocker scope')
+                with svc.store.transaction() as db:
+                    svc._move(db, svc._task(db, draft['id']), 'todo', 'api')
+                    svc._move(db, svc._task(db, draft['id']), 'waiting_on_input', 'api', comment='Approve A?')
+                page.get_by_role('button', name='Open Draft blocker scope', exact=True).click()
+                page.locator('#comment-body').fill('Approve A only')
+                old_blocker = svc.get_task(draft['id'])['blocker_comment_id']
+                with svc.store.transaction() as db:
+                    new_blocker = svc._comment(db, draft['id'], 'Approve B?', 'agent', 'agent')['id']
+                    db.execute('UPDATE tasks SET blocker_comment_id=? WHERE id=?', (new_blocker, draft['id']))
+                page.evaluate('refresh()')
+                page.locator('#resume-task').click()
+                expect(page.locator('#toast')).to_contain_text('Saved as context only')
+                expect(page.locator('#task-comments')).to_contain_text('Approve A only')
+                assert svc.get_task(draft['id'])['comments'][-1]['in_reply_to'] == old_blocker
+                assert not svc.store.one("SELECT 1 FROM runs WHERE task_id=? AND status IN ('queued','running')", (draft['id'],))
+                page.locator('[data-close="task-dialog"]').click()
+                waiting = page.locator('[data-state="waiting_on_input"] .card').filter(has_text='Clarify the acceptance criteria')
                 waiting.click()
                 expect(page.locator('#resume-task')).to_be_visible()
                 page.locator('#comment-body').fill('Acceptance criterion: a plain text report.')

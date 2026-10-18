@@ -29,7 +29,7 @@ class DesktopBridge:
 
     def status(self):
         saved = self.store.one("SELECT value FROM metadata WHERE key='codex_dispatcher'")
-        runs = self.store.all("SELECT d.*,r.status,r.started_at,r.created_at,r.stop_requested FROM desktop_runs d "
+        runs = self.store.all("SELECT d.*,r.status,r.started_at,r.activity_finished_at,r.created_at,r.stop_requested FROM desktop_runs d "
                               "JOIN runs r ON r.id=d.run_id WHERE (r.status='running' AND r.stop_requested=0) "
                               "OR d.phase IN ('claimed','attached')")
         active = [r for r in runs if r['status'] == 'running' and not r['stop_requested']]
@@ -38,16 +38,18 @@ class DesktopBridge:
                       (r['phase'] == 'claimed' and r['send_started_at'] is not None and
                        time.time() - r['send_started_at'] >= 120)]
         failed = [r for r in active if r['queue_error'] and r['next_attempt_at'] is None and not r['queue_inflight']]
+        awaiting_ack = [r for r in active if r['activity_finished_at'] is not None]
+        overdue_ack = [r for r in awaiting_ack if time.time() - r['activity_finished_at'] >= 120]
         overdue = [r for r in waiting if time.time() - r['created_at'] >= 120]
         state = ('needs_reconciliation' if unresolved else 'delivery_failed' if failed else
                  'awaiting_dispatcher' if any(r['phase'] == 'dispatched' for r in waiting) else
-                 'awaiting_task_start' if waiting else 'observing' if active else
+                 'awaiting_task_start' if waiting else 'awaiting_acknowledgment' if awaiting_ack else 'observing' if active else
                  'configured' if saved else 'disconnected')
         return {'connected': bool(saved), 'thread_id': saved['value'] if saved else None,
                 'state': state, 'waiting_runs': len(waiting),
                 'oldest_waiting_seconds': max([max(0, time.time() - r['created_at']) for r in waiting], default=0),
-                'requires_attention': bool(unresolved or failed or overdue),
-                'attention_run_ids': list(dict.fromkeys(r['run_id'] for r in unresolved + failed + overdue)),
+                'requires_attention': bool(unresolved or failed or overdue or overdue_ack),
+                'attention_run_ids': list(dict.fromkeys(r['run_id'] for r in unresolved + failed + overdue + overdue_ack)),
                 'instructions': self.setup_prompt()}
 
     def command(self):
@@ -205,6 +207,18 @@ class DesktopBridge:
                            'not checked in. The run remains active. Inspect the dispatcher and retained task '
                            'chat in Codex for approval or interrupted handoff; do not resend the task prompt.')
             self.service._comment(db, task['id'], message, 'system', 'system')
+
+    def acknowledgment_delayed(self, run_id):
+        with self.store.transaction() as db:
+            task, run = self._require_active(db, run_id)
+            entry = db.execute('SELECT ack_delayed_at FROM desktop_runs WHERE run_id=?', (run_id,)).fetchone()
+            if not run['activity_finished_at'] or entry['ack_delayed_at'] is not None:
+                return
+            db.execute('UPDATE desktop_runs SET ack_delayed_at=? WHERE run_id=?', (time.time(), run_id))
+            self.service._comment(db, task['id'],
+                'Awaiting dispatcher acknowledgment: the task submitted its result. Its result and queued '
+                'follow-up are retained. Use Reconcile handoff to observe the same chat and acknowledge '
+                'its actual completion; do not resend the task prompt.', 'system', 'system')
 
     def claim(self, run_id):
         task, _ = self.active(run_id)
@@ -490,7 +504,10 @@ class DesktopRunner:
                 except (OSError, TimeoutError, DomainError):
                     pass
             now = time.monotonic()
-            if not current['started_at']:
+            if current['activity_finished_at'] is not None:
+                if time.time() - current['activity_finished_at'] >= 120:
+                    bridge.acknowledgment_delayed(run['id'])
+            elif not current['started_at']:
                 if now - queued_at >= 120:
                     bridge.delayed(run['id'])
             else:
@@ -498,6 +515,16 @@ class DesktopRunner:
                     elapsed = max(0, time.time() - current['started_at'])
                     deadline = now + max(0, service.settings.run_timeout_seconds - elapsed)
                 if now >= deadline:
-                    raise TimeoutError('No completed app result before the execution timeout. Open Codex and '
-                                       'inspect the task chat. Stop any active turn there before retrying.')
+                    error = ('No completed app result before the execution timeout. Open Codex and '
+                             'inspect the task chat. Stop any active turn there before retrying.')
+                    # A callback can commit while queue delivery awaits, or from an API thread.
+                    # Serialize expiry with result submission so accepted input cannot be cancelled.
+                    with service.store.transaction() as db:
+                        latest = db.execute('SELECT * FROM runs WHERE id=?', (run['id'],)).fetchone()
+                        if latest['status'] != 'running' or latest['stop_requested']:
+                            return
+                        if latest['activity_finished_at'] is not None:
+                            continue
+                        service._finish_run(db, run['id'], 'failed', error)
+                    raise TimeoutError(error)
             await asyncio.sleep(service.settings.poll_seconds)
