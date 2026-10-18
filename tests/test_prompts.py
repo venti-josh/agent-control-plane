@@ -14,7 +14,9 @@ async def test_task_prompt_preserves_linear_link_for_branch_naming(service, tmp_
         db.execute('UPDATE tasks SET linear_url=? WHERE id=?', (linear_url, task['id']))
     job = service.claim_next()
     if desktop:
-        prompt = (await DesktopBridge(service).prepare(job['id']))['prompt']
+        bridge = DesktopBridge(service)
+        bridge.dispatch(job['id']); bridge.claim(job['id'])
+        prompt = (await bridge.prepare(job['id']))['prompt']
     else:
         prompt = build_prompt(service.get_task(task['id']), job)
 

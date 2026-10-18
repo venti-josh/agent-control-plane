@@ -4,6 +4,8 @@ import argparse
 import json
 import os
 import sys
+import time
+from uuid import uuid4
 import webbrowser
 from collections import deque
 from pathlib import Path
@@ -11,18 +13,50 @@ from pathlib import Path
 import httpx
 
 from .config import STATES, Settings
+from .retries import retry_delay
 
 
-def request(base: str, method: str, path: str, data: dict | None = None):
+def request(base: str, method: str, path: str, data: dict | None = None,
+            idempotency_key: str | None = None):
+    mutation = method == 'POST' and (path == '/api/tasks' or
+        (path.startswith('/api/tasks/') and path.rsplit('/', 1)[-1] in
+         {'comments', 'request-input', 'submit-for-review', 'request-changes'}) or
+        (path.startswith('/api/desktop/runs/') and path.endswith('/action') and
+         (data or {}).get('action') in {'comment', 'input', 'review'}))
+    key = idempotency_key or (str(uuid4()) if mutation else None)
     with httpx.Client(timeout=30, trust_env=False) as client:
-        response = client.request(method, base.rstrip("/") + path, json=data)
-        if response.is_error:
+        for attempt in range(3):
+            # Older servers ignore request keys. Never replay a write against one.
+            protected = False
+            if mutation:
+                health = client.get(base.rstrip('/') + '/api/health')
+                health.raise_for_status()
+                protected = 'command-receipts' in health.json().get('capabilities', [])
+                if (idempotency_key or attempt > 0) and not protected:
+                    raise RuntimeError('This ACP server does not support idempotent commands; upgrade it first.')
+            retryable = method == 'GET' or protected
             try:
-                message = response.json().get("detail", response.text)
-            except ValueError:
-                message = response.text
-            raise RuntimeError(f"HTTP {response.status_code}: {message}")
-        return response.json()
+                response = client.request(method, base.rstrip('/') + path, json=data,
+                                          headers={'Idempotency-Key': key} if key and protected else {})
+                if response.is_error and retryable and attempt < 2:
+                    error = httpx.HTTPStatusError('ACP request failed', request=response.request, response=response)
+                    delay = retry_delay(error, attempt)
+                    # Long Retry-After windows belong to the durable queue, not a blocked CLI.
+                    if delay is not None and delay <= 5:
+                        time.sleep(delay)
+                        continue
+                if response.is_error:
+                    try:
+                        message = response.json().get('detail', response.text)
+                    except ValueError:
+                        message = response.text
+                    raise RuntimeError(f'HTTP {response.status_code}: {message}')
+                return response.json()
+            except (httpx.TransportError, ValueError):
+                if not retryable or attempt == 2:
+                    raise
+                time.sleep(0.5 * (2 ** attempt))
+    raise RuntimeError('ACP request did not complete')
 
 
 def main() -> None:
@@ -120,6 +154,9 @@ def main() -> None:
             item.add_argument('--text', default='')
             item.add_argument('--output-url', default='')
             item.add_argument('--kind', choices=['text', 'file', 'url', 'pr'], default='text')
+    for command in (create, comment, answer, changes):
+        command.add_argument('--request-id', help='Reuse this ID when retrying the same logical command')
+    ds.choices['action'].add_argument('--request-id', help='Reuse for retries of this task action')
     args = parser.parse_args()
     try:
         from . import daemon
@@ -171,7 +208,8 @@ def main() -> None:
                     payload['error'] = args.error
                 if action == 'action':
                     payload.update(action=args.action, text=args.text, output_url=args.output_url, kind=args.kind)
-                result = request(base, 'POST', f'/api/desktop/runs/{args.run_id}/{action}', payload)
+                result = request(base, 'POST', f'/api/desktop/runs/{args.run_id}/{action}', payload,
+                                 idempotency_key=getattr(args, 'request_id', None))
             print(json.dumps(result, indent=2))
             return
         if args.command in {"start", "stop", "status", "open", "logs"}:
@@ -237,7 +275,7 @@ def main() -> None:
         elif args.command == "create":
             result = request(base, "POST", "/api/tasks", {"title": args.title, "description": args.description,
                                                          "provider": args.provider, "repo_path": args.repo,
-                                                         "state": args.state})
+                                                         "state": args.state}, idempotency_key=args.request_id)
         elif args.command == "list":
             result = request(base, "GET", "/api/tasks")
         elif args.command == "show":
@@ -246,13 +284,12 @@ def main() -> None:
             result = request(base, "POST", f"/api/tasks/{args.task_id}/transition",
                              {"state": args.state, "comment": args.comment})
         elif args.command == "comment":
-            result = request(base, "POST", f"/api/tasks/{args.task_id}/comments", {"body": args.body})
+            result = request(base, "POST", f"/api/tasks/{args.task_id}/comments", {"body": args.body}, idempotency_key=args.request_id)
         elif args.command == "answer":
-            task = request(base, "GET", f"/api/tasks/{args.task_id}")
             result = request(base, "POST", f"/api/tasks/{args.task_id}/comments",
-                             {"body": args.body, "in_reply_to": task["blocker_comment_id"], "resume": True})
+                             {"body": args.body, "resume": True}, idempotency_key=args.request_id)
         elif args.command == "changes":
-            result = request(base, "POST", f"/api/tasks/{args.task_id}/request-changes", {"feedback": args.feedback})
+            result = request(base, "POST", f"/api/tasks/{args.task_id}/request-changes", {"feedback": args.feedback}, idempotency_key=args.request_id)
         elif args.command in {"cancel", "reset-session"}:
             result = request(base, "POST", f"/api/tasks/{args.task_id}/{args.command}")
         elif args.command == "demo":

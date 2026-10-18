@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from importlib.metadata import distribution, PackageNotFoundError
 import math
 import time
 from contextlib import asynccontextmanager
@@ -9,7 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 import httpx
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, Header, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
@@ -232,7 +233,8 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True,
         return desktop.connect(data.thread_id)
 
     @app.post('/api/desktop/runs/{run_id}/{operation}')
-    async def desktop_run(run_id: str, operation: str, data: DesktopRequest):
+    async def desktop_run(run_id: str, operation: str, data: DesktopRequest,
+                          idempotency_key: str | None = Header(default=None, alias='Idempotency-Key')):
         if operation == 'recover':
             return await desktop.recover(run_id)
         if operation == 'claim':
@@ -248,13 +250,19 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True,
         if operation in {'complete', 'acknowledge'}:
             return desktop.complete(run_id, data.thread_id, data.error)
         if operation == 'action':
-            return desktop.action(run_id, data.thread_id, data.action, data.text, data.output_url, data.kind)
+            return desktop.action(run_id, data.thread_id, data.action, data.text, data.output_url, data.kind, idempotency_key)
         raise DomainError('Unknown desktop operation', 404)
+
+    try:
+        provenance = json.loads(distribution('acp').read_text('direct_url.json') or '{}')
+        build_revision = provenance.get('vcs_info', {}).get('commit_id')
+    except (PackageNotFoundError, ValueError):
+        build_revision = None
 
     @app.get("/api/health")
     def health():
         failed = store.one("SELECT count(*) n FROM outbox WHERE status='failed'")["n"]
-        return {"version": __version__, "worker_running": bool(worker.tasks),
+        return {"version": __version__, "build_revision": build_revision, "desktop": desktop.status(), "capabilities": ["command-receipts"], "worker_running": any(not task.done() for task in worker.tasks),
                 "worker_error": worker.last_error, "failed_deliveries": failed}
 
     @app.get("/api/config")
@@ -279,8 +287,8 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True,
         return CodexActivity(settings.data_dir / 'codex-activity.sqlite3').summary()
 
     @app.post("/api/tasks", status_code=201)
-    def create_task(body: CreateTask):
-        return service.create_task(**body.model_dump())
+    def create_task(body: CreateTask, idempotency_key: str | None = Header(default=None, alias='Idempotency-Key')):
+        return service.create_task(**body.model_dump(), idempotency_key=idempotency_key)
 
     @app.get("/api/tasks/{task_id}")
     def get_task(task_id: str):
@@ -295,8 +303,8 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True,
         return service.move_task(task_id, **body.model_dump())
 
     @app.post("/api/tasks/{task_id}/comments", status_code=201)
-    def add_comment(task_id: str, body: Comment):
-        return service.add_comment(task_id, **body.model_dump())
+    def add_comment(task_id: str, body: Comment, idempotency_key: str | None = Header(default=None, alias='Idempotency-Key')):
+        return service.add_comment(task_id, **body.model_dump(), idempotency_key=idempotency_key)
 
     @app.patch("/api/tasks/{task_id}/comments/{comment_id}")
     def edit_comment(task_id: str, comment_id: str, body: EditComment):
@@ -307,16 +315,16 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True,
         return service.edit_comment(task_id, comment_id, delete=True)
 
     @app.post("/api/tasks/{task_id}/request-input")
-    def request_input(task_id: str, body: InputRequest):
-        return service.request_input(task_id, **body.model_dump())
+    def request_input(task_id: str, body: InputRequest, idempotency_key: str | None = Header(default=None, alias='Idempotency-Key')):
+        return service.request_input(task_id, **body.model_dump(), idempotency_key=idempotency_key)
 
     @app.post("/api/tasks/{task_id}/submit-for-review")
-    def submit_for_review(task_id: str, body: ReviewSubmission):
-        return service.submit_for_review(task_id, **body.model_dump())
+    def submit_for_review(task_id: str, body: ReviewSubmission, idempotency_key: str | None = Header(default=None, alias='Idempotency-Key')):
+        return service.submit_for_review(task_id, **body.model_dump(), idempotency_key=idempotency_key)
 
     @app.post("/api/tasks/{task_id}/request-changes", status_code=202)
-    def request_changes(task_id: str, body: ChangeRequest):
-        return service.request_changes(task_id, body.feedback)
+    def request_changes(task_id: str, body: ChangeRequest, idempotency_key: str | None = Header(default=None, alias='Idempotency-Key')):
+        return service.request_changes(task_id, body.feedback, idempotency_key=idempotency_key)
 
     @app.post("/api/tasks/{task_id}/cancel")
     def cancel(task_id: str):
@@ -397,8 +405,10 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True,
             item = db.execute("SELECT status FROM outbox WHERE id=?", (delivery_id,)).fetchone()
             if not item:
                 raise DomainError("Delivery not found", 404)
-            if item[0] == "working":
-                raise DomainError("Delivery is already in progress")
+            if item[0] == "pending":
+                return {"queued": True}
+            if item[0] != "failed":
+                raise DomainError("Only failed deliveries can be retried")
             db.execute("UPDATE outbox SET status='pending',attempts=0,available_at=?,last_error=NULL WHERE id=?",
                        (time.time(), delivery_id))
         return {"queued": True}
