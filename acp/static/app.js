@@ -5,13 +5,63 @@ let config, tasks = [], selected = null, dragId = null, refreshTimer, toastTimer
 const labels = {claude:'Claude Code',codex:'Codex',demo:'Demo'};
 const time = (t) => new Date(t * 1000).toLocaleString(undefined, {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, 6000); }
+const pendingCommands = new Map();
 async function api(path, method='GET', body) {
-  const response = await fetch('/api' + path, {method, headers: body ? {'Content-Type':'application/json'} : {}, body: body ? JSON.stringify(body) : undefined});
-  const data = await response.json();
-  if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail));
-  return data;
+  const protectedWrite = method === 'POST' && (path === '/tasks' ||
+    /^\/tasks\/[^/]+\/(comments|request-input|submit-for-review|request-changes)$/.test(path));
+  const storageKey = 'acp-command:' + JSON.stringify([path, body]);
+  let key;
+  if (protectedWrite) {
+    try { key = sessionStorage.getItem(storageKey); } catch (_) { /* unavailable in embedded surfaces */ }
+    key = key || pendingCommands.get(storageKey);
+    key = key || crypto.randomUUID();
+    pendingCommands.set(storageKey, key);
+    try { sessionStorage.setItem(storageKey, key); } catch (_) { /* retain in memory */ }
+  }
+  const clearKey = () => {
+    pendingCommands.delete(storageKey);
+    try { sessionStorage.removeItem(storageKey); } catch (_) { /* unavailable */ }
+  };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let supported = false;
+    if (protectedWrite) {
+      const health = await fetch('/api/health').then(r => r.json());
+      supported = health.capabilities?.includes('command-receipts');
+      if (!supported) throw new Error('ACP must support command receipts before this request can safely be retried. Upgrade the server first.');
+    }
+    let response, data;
+    try {
+      response = await fetch('/api' + path, {method,
+        headers: {...(body ? {'Content-Type':'application/json'} : {}), ...(supported ? {'Idempotency-Key':key} : {})},
+        body: body ? JSON.stringify(body) : undefined});
+      data = await response.json();
+    } catch (error) {
+      if (!supported || attempt === 2) throw error;
+      await new Promise(resolve => setTimeout(resolve, 500 * 2 ** attempt));
+      continue;
+    }
+    if (!response.ok) {
+      const retryAfter = response.headers?.get('Retry-After');
+      const retrySeconds = retryAfter == null ? 0 : (Number.isFinite(Number(retryAfter)) ? Number(retryAfter) : (Date.parse(retryAfter) - Date.now()) / 1000);
+      if (supported && attempt < 2 && [408,425,429,500,502,503,504].includes(response.status) && !(retrySeconds > 5)) {
+        await new Promise(resolve => setTimeout(resolve, Math.max(500 * 2 ** attempt, retrySeconds * 1000 || 0)));
+        continue;
+      }
+      if (response.status < 500 && ![408,425,429].includes(response.status)) clearKey();
+      throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail));
+    }
+    clearKey();
+    return data;
+  }
 }
-const attempt = (fn) => async (event) => { event?.preventDefault(); try { await fn(event); } catch (error) { toast(error.message); } };
+const attempt = (fn) => async (event) => {
+  event?.preventDefault();
+  const button = event?.submitter || (event?.currentTarget?.tagName === 'BUTTON' ? event.currentTarget : null);
+  if (button?.disabled) return;
+  if (button) button.disabled = true;
+  try { await fn(event); } catch (error) { toast(error.message); }
+  finally { if (button) button.disabled = false; }
+};
 function safeLink(url, title=url) { return /^https?:\/\//i.test(url) ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>` : `<span>${esc(title)}</span>`; }
 function runLabel(status, startedAt, desktopPhase) {
   if (status === 'running' && !startedAt && desktopPhase) {
@@ -87,10 +137,11 @@ function drawTask() {
   $('request-changes').hidden = task.state !== 'ready_for_review';
   $('task-runs').innerHTML = `<p class="hint">Session: ${esc(task.session_id || 'Not started')}<br>Workspace: ${esc(task.workspace || 'Managed by the agent')}</p>` + task.runs.map(r => {
     const d = r.desktop;
-    const waiting = r.status === 'running' && !r.stop_requested && !r.started_at && d;
+    const recoverable = r.status === 'running' && !r.stop_requested && d &&
+      (!r.started_at || (d.queue_error && !d.next_attempt_at));
     const timing = d ? `<p class="hint">Dispatched: ${d.dispatched_at ? time(d.dispatched_at) : 'Unknown'} · Queue accepted: ${d.queue_accepted_at ? time(d.queue_accepted_at) : 'Not confirmed'} · Claimed: ${d.claimed_at ? time(d.claimed_at) : 'Not yet'} · Started: ${r.started_at ? time(r.started_at) : 'Not yet'}</p>` : '';
-    const recovery = waiting ? `<p class="hint">${d.phase === 'dispatched' ? 'Delivery is pending. Retry delivery keeps this same run. If it remains waiting, open the connected ACP dispatcher chat in Codex and resolve any resume or approval request.' : 'Inspect the dispatcher and retained task chat for approval or interrupted handoff. Do not resend the task prompt.'}</p>${d.phase === 'dispatched' && d.queue_accepted_at ? `<button type="button" data-recover-run="${esc(r.id)}">Retry delivery</button>` : ''}` : '';
-    return `<div class="run"><span class="run-status ${esc(r.status)}">${esc(runLabel(r.status, r.started_at, d?.phase))}</span><code>${r.id.slice(0,8)}</code><span>${esc(r.trigger)}</span><a href="/api/runs/${r.id}/log" target="_blank" rel="noopener">View log ↗</a></div>${timing}${recovery}`;
+    const recovery = recoverable ? `<p class="hint">${d.phase === 'dispatched' ? 'Delivery is pending. Retry delivery keeps this same run. If it remains waiting, open the connected ACP dispatcher chat in Codex and resolve any resume or approval request.' : 'Inspect the dispatcher and retained task chat for approval or interrupted handoff. Do not resend the task prompt.'}</p>${!d.queue_inflight && (d.queue_accepted_at || d.queue_error) ? `<button type="button" data-recover-run="${esc(r.id)}">${d.phase === 'dispatched' ? 'Retry delivery' : 'Reconcile handoff'}</button>` : ''}` : '';
+    return `<div class="run"><span class="run-status ${esc(r.status)}">${esc(runLabel(r.status, r.started_at, d?.phase))}</span><code>${r.id.slice(0,8)}</code><span>${esc(r.trigger)}</span><a href="/api/runs/${r.id}/log" target="_blank" rel="noopener">View log ↗</a></div>${timing}${d?.queue_error ? `<p class="hint">Delivery attempt ${d.delivery_attempts}: ${esc(d.queue_error)}${d.next_attempt_at ? ' · Retry scheduled' : ' · Needs attention'}</p>` : ''}${recovery}`;
   }).join('');
   document.querySelectorAll('[data-recover-run]').forEach(button => {
     button.onclick = attempt(async () => {
@@ -156,7 +207,7 @@ async function updateDesktopStatus() {
   config.codex_desktop = state.connected;
   $('desktop-badge').textContent = state.connected ? 'Configured' : 'CLI mode';
   $('desktop-status').textContent = state.connected
-    ? `Dispatcher chat: ${state.thread_id}. A saved connection does not confirm readiness. Keep Codex open; inspect this chat if delivery is delayed. Cancelling in ACP revokes results; stop active turns in Codex.`
+    ? `Status: ${state.state.replaceAll('_', ' ')}. ${state.waiting_runs} waiting. Dispatcher chat: ${state.thread_id}. A saved connection does not confirm readiness. Keep Codex open; inspect this chat if delivery is delayed. Cancelling in ACP revokes results; stop active turns in Codex.`
     : 'Paste the setup prompt into Codex once. It connects a dispatcher chat that creates and continues task chats automatically.';
   $('desktop-thread').value = state.thread_id || '';
   $('desktop-instructions').value = state.instructions;
@@ -176,7 +227,8 @@ async function showSettings() {
 async function health() {
   try {
     const data = await api('/health');
-    const problems = [data.failed_deliveries ? `${data.failed_deliveries} failed integration/event deliveries — click to inspect` : '', data.worker_error ? 'Worker reported an error; check server logs.' : '', !data.worker_running ? 'The task worker is not running.' : ''].filter(Boolean);
+    $('runtime-version').textContent = `ACP ${data.version}${data.build_revision ? ' · ' + data.build_revision.slice(0, 8) : ''}`;
+    const problems = [data.desktop?.requires_attention ? `Dispatcher: ${data.desktop.state.replaceAll('_', ' ')} · ${data.desktop.waiting_runs} waiting — open Settings or task details` : '', data.failed_deliveries ? `${data.failed_deliveries} failed integration/event deliveries — click to inspect` : '', data.worker_error ? 'Worker reported an error; check server logs.' : '', !data.worker_running ? 'The task worker is not running.' : ''].filter(Boolean);
     $('health-warning').hidden = !problems.length;
     $('health-warning').textContent = problems.join(' · ');
   } catch (_) { /* EventSource shows connection status. */ }

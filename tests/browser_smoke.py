@@ -107,8 +107,58 @@ def main():
                 page.get_by_role('button', name='+ New task').click()
                 page.locator('#create-form [name="title"]').fill('Browser-created task')
                 page.locator('#create-form [name="description"]').fill('<script>noHTML()</script>')
+                if os.getenv('ACP_BROWSER_BRIDGE') != '1':
+                    lost_responses = []
+                    def lose_create_response(route):
+                        if route.request.method != 'POST':
+                            route.continue_(); return
+                        response = route.fetch()
+                        lost_responses.append(response.json()['id'])
+                        if len(lost_responses) == 1:
+                            route.abort('failed')
+                        else:
+                            route.fulfill(response=response)
+                    page.route('**/api/tasks', lose_create_response)
                 page.get_by_role('button', name='Create task', exact=True).click()
                 expect(page.get_by_role('button', name='Open Browser-created task')).to_be_visible()
+                expect(page.locator('#create-dialog')).not_to_be_visible()
+                if os.getenv('ACP_BROWSER_BRIDGE') != '1':
+                    assert len(lost_responses) == 2 and len(set(lost_responses)) == 1
+                    assert svc.store.one("SELECT count(*) n FROM tasks WHERE title='Browser-created task'")['n'] == 1
+                    page.unroute('**/api/tasks', lose_create_response)
+                    # A downgrade after a committed write must never cause an unkeyed replay.
+                    downgraded_writes = []
+                    def downgrade_after_commit(route):
+                        if route.request.method != 'POST':
+                            route.continue_(); return
+                        response = route.fetch()
+                        downgraded_writes.append(response.json()['id'])
+                        route.abort('failed')
+                    def capability(route):
+                        route.fulfill(json={'capabilities': [] if downgraded_writes else ['command-receipts']})
+                    page.route('**/api/tasks', downgrade_after_commit)
+                    page.route('**/api/health', capability)
+                    result = page.evaluate("""async () => {
+                        try { await api('/tasks', 'POST', {title:'Downgrade boundary'}); }
+                        catch (e) { return e.message; }
+                    }""")
+                    assert 'safely be retried' in result
+                    # A manual retry retains the key and also refuses the old server.
+                    result = page.evaluate("""async () => {
+                        try { await api('/tasks', 'POST', {title:'Downgrade boundary'}); }
+                        catch (e) { return e.message; }
+                    }""")
+                    assert 'safely be retried' in result
+                    assert len(downgraded_writes) == 1
+                    result = page.evaluate("""async () => {
+                        try { await api('/tasks', 'POST', {title:'Old server first write'}); }
+                        catch (e) { return e.message; }
+                    }""")
+                    assert 'Upgrade the server first' in result
+                    assert len(downgraded_writes) == 1
+                    page.unroute('**/api/tasks', downgrade_after_commit)
+                    page.unroute('**/api/health', capability)
+
                 page.get_by_role('button', name='Open Browser-created task').click()
                 expect(page.locator('.task-description')).to_have_text('<script>noHTML()</script>')
                 page.locator('#task-state').select_option('todo')
@@ -155,6 +205,15 @@ def main():
                 session = str(uuid4())
                 dispatcher.started(job['id'], session)
                 expect(page.locator('#running-count')).to_have_text('1 running')
+                with svc.store.transaction() as db:
+                    db.execute("UPDATE desktop_runs SET delivery_attempts=3,queue_error='Observation delivery failed',next_attempt_at=NULL,recovery_at=NULL WHERE run_id=?", (job['id'],))
+                page.evaluate('refresh()')
+                expect(page.get_by_role('button', name='Reconcile handoff', exact=True)).to_be_visible()
+                page.get_by_role('button', name='Reconcile handoff', exact=True).click()
+                expect(page.locator('#toast')).to_contain_text('same run')
+                page.wait_for_function("!document.querySelector('#task-runs').textContent.includes('Observation delivery failed')")
+                assert dispatcher.claim(job['id'])['action'] == 'observe'
+                assert len(svc.get_task(app_task['id'])['runs']) == 1
                 dispatcher.action(job['id'], session, 'review', text='Synthetic browser check complete')
                 dispatcher.complete(job['id'], session)
                 page.locator('[data-close="task-dialog"]').click()

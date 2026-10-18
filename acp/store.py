@@ -112,6 +112,13 @@ CREATE TABLE IF NOT EXISTS outbox (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS outbox_ready ON outbox(status,available_at,id);
+CREATE TABLE IF NOT EXISTS command_receipts (
+    key TEXT PRIMARY KEY,
+    operation TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    result TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS receipts (
     source TEXT NOT NULL,
     id TEXT NOT NULL,
@@ -153,6 +160,15 @@ class Store:
             for name in ('dispatched_at', 'queue_accepted_at', 'claimed_at', 'delayed_at', 'recovery_at'):
                 if name not in desktop_columns:
                     db.execute(f'ALTER TABLE desktop_runs ADD COLUMN {name} REAL')
+            if 'send_started_at' not in desktop_columns:
+                db.execute('ALTER TABLE desktop_runs ADD COLUMN send_started_at REAL')
+                # Old claimed handoffs may already have sent their prompt. Never grant another send.
+                db.execute("UPDATE desktop_runs SET send_started_at=coalesce(claimed_at,0) WHERE phase='claimed'")
+            for name, kind in [('delivery_attempts', 'INTEGER NOT NULL DEFAULT 0'),
+                               ('queue_inflight', 'INTEGER NOT NULL DEFAULT 0'),
+                               ('queue_error', 'TEXT'), ('next_attempt_at', 'REAL')]:
+                if name not in desktop_columns:
+                    db.execute(f'ALTER TABLE desktop_runs ADD COLUMN {name} {kind}')
             child_columns = {r['name'] for r in db.execute('PRAGMA table_info(subagent_activity)')}
             if 'state' not in child_columns:
                 db.execute("ALTER TABLE subagent_activity ADD COLUMN state TEXT NOT NULL DEFAULT 'running'")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import fnmatch
 import json
 import re
@@ -66,6 +67,24 @@ class TaskService:
         if not task:
             raise DomainError("Task not found", 404)
         return task
+
+    def _command(self, key, operation, arguments, apply):
+        """Commit the operation and its replay result in the same SQLite transaction."""
+        if key is not None and (not key.strip() or len(key) > 200):
+            raise DomainError('Idempotency key must contain 1 to 200 characters.', 422)
+        fingerprint = hashlib.sha256(json.dumps(arguments, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        with self.store.transaction() as db:
+            if key:
+                previous = db.execute('SELECT * FROM command_receipts WHERE key=?', (key,)).fetchone()
+                if previous:
+                    if previous['operation'] != operation or previous['fingerprint'] != fingerprint:
+                        raise DomainError('Idempotency key was already used for a different command.')
+                    return json.loads(previous['result'])
+            result = apply(db)
+            if key:
+                db.execute('INSERT INTO command_receipts VALUES(?,?,?,?,?)',
+                           (key, operation, fingerprint, encode(result), time.time()))
+            return result
 
     @staticmethod
     def _check_run(db: sqlite3.Connection, task: dict, run_id: str | None) -> None:
@@ -215,7 +234,9 @@ class TaskService:
         return self._task(db, task["id"])
 
     def create_task(self, title: str, description: str = "", provider: str | None = None,
-                    repo_path: str | None = None, state: str = "planning") -> dict:
+                    repo_path: str | None = None, state: str = "planning",
+                    idempotency_key: str | None = None) -> dict:
+        command = dict(title=title, description=description, provider=provider, repo_path=repo_path, state=state)
         provider = provider or self.settings.default_provider
         if provider not in PROVIDERS:
             raise DomainError("Unknown agent provider", 422)
@@ -224,7 +245,7 @@ class TaskService:
         repo_path = repo_path if repo_path is not None else self.settings.default_repo
         if repo_path:
             repo_path = str(Path(repo_path).expanduser().resolve())
-        with self.store.transaction() as db:
+        def apply(db):
             tid, now = str(uuid4()), time.time()
             db.execute("INSERT INTO tasks(id,title,description,state,provider,repo_path,created_at,updated_at) "
                        "VALUES(?,?,?,'planning',?,?,?,?)",
@@ -232,6 +253,7 @@ class TaskService:
             self._event(db, "task.created", tid, {"title": title, "provider": provider}, "api")
             task = self._task(db, tid)
             return self._move(db, task, "todo", "api") if state == "todo" else task
+        return self._command(idempotency_key, 'create_task', command, apply)
 
     def get_task(self, task_id: str) -> dict:
         with self.store.connect() as db:
@@ -295,8 +317,11 @@ class TaskService:
             return self._task(db, task_id)
 
     def add_comment(self, task_id: str, body: str, in_reply_to: str | None = None,
-                    run_id: str | None = None, resume: bool = False) -> dict:
-        with self.store.transaction() as db:
+                    run_id: str | None = None, resume: bool = False,
+                    idempotency_key: str | None = None) -> dict:
+        command = dict(task_id=task_id, body=body, in_reply_to=in_reply_to, run_id=run_id, resume=resume)
+        def apply(db):
+            reply_to = in_reply_to
             task = self._task(db, task_id)
             self._check_run(db, task, run_id)
             if resume and run_id:
@@ -304,13 +329,14 @@ class TaskService:
             if resume and task["state"] != "waiting_on_input":
                 raise DomainError("Only a waiting task can be resumed")
             wake = not run_id and task["state"] == "waiting_on_input"
-            if wake and not in_reply_to:
-                in_reply_to = task["blocker_comment_id"]
+            if wake and not reply_to:
+                reply_to = task["blocker_comment_id"]
             comment = self._comment(db, task_id, body, "agent" if run_id else "you",
-                                    "agent" if run_id else "api", in_reply_to)
+                                    "agent" if run_id else "api", reply_to)
             if not run_id:
                 self._route_comment(db, task, comment)
             return comment
+        return self._command(idempotency_key, 'add_comment', command, apply)
 
     def edit_comment(self, task_id: str, comment_id: str, body: str | None = None, delete: bool = False) -> dict:
         with self.store.transaction() as db:
@@ -331,13 +357,17 @@ class TaskService:
                         {"comment_id": comment_id, "body": body}, "api")
             return dict(db.execute("SELECT * FROM comments WHERE id=?", (comment_id,)).fetchone())
 
-    def request_input(self, task_id: str, question: str, run_id: str | None = None) -> dict:
-        with self.store.transaction() as db:
+    def request_input(self, task_id: str, question: str, run_id: str | None = None,
+                      idempotency_key: str | None = None) -> dict:
+        command = dict(task_id=task_id, question=question, run_id=run_id)
+        def apply(db):
             return self._move(db, self._task(db, task_id), "waiting_on_input",
                               "agent" if run_id else "api", comment=question, run_id=run_id)
+        return self._command(idempotency_key, 'request_input', command, apply)
 
     def submit_for_review(self, task_id: str, summary: str, output_url: str = "", kind: str = "text",
-                          run_id: str | None = None) -> dict:
+                          run_id: str | None = None, idempotency_key: str | None = None) -> dict:
+        command = dict(task_id=task_id, summary=summary, output_url=output_url, kind=kind, run_id=run_id)
         required(summary, "Summary")
         if kind not in {"text", "pr", "file", "url"}:
             raise DomainError("Output kind must be text, pr, file, or url", 422)
@@ -347,7 +377,7 @@ class TaskService:
             parse_pr(output_url)
         if kind == "url" and urlparse(output_url).scheme not in {"https", "http"}:
             raise DomainError("URL outputs must use HTTP(S)", 422)
-        with self.store.transaction() as db:
+        def apply(db):
             task = self._task(db, task_id)
             self._check_run(db, task, run_id)
             if task["state"] != "in_progress":
@@ -375,14 +405,17 @@ class TaskService:
             self._comment(db, task_id, summary + (f"\n\n{output_link}" if output_link else ""),
                           "agent" if run_id else "you", "agent" if run_id else "api")
             return self._move(db, task, "ready_for_review", "agent" if run_id else "api", run_id=run_id)
+        return self._command(idempotency_key, 'submit_for_review', command, apply)
 
-    def request_changes(self, task_id: str, feedback: str) -> dict:
-        with self.store.transaction() as db:
+    def request_changes(self, task_id: str, feedback: str, idempotency_key: str | None = None) -> dict:
+        command = dict(task_id=task_id, feedback=feedback)
+        def apply(db):
             task = self._task(db, task_id)
             if task["state"] != "ready_for_review":
                 raise DomainError("Task is not ready for review")
             comment = self._comment(db, task_id, feedback, "you", "api")
             return {"run_id": self._schedule(db, task_id, "review", {"comment_id": comment["id"]})}
+        return self._command(idempotency_key, 'request_changes', command, apply)
 
     def reset_session(self, task_id: str) -> dict:
         with self.store.transaction() as db:
@@ -430,6 +463,8 @@ class TaskService:
             run = row(db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone())
             if not run or run["status"] != "running" or run["stop_requested"]:
                 raise DomainError("Run cancelled before launch")
+            if run["started_at"] is not None:
+                return
             task = self._task(db, run["task_id"])
             self._move(db, task, "in_progress", "system", internal=True)
             db.execute("UPDATE tasks SET last_error=NULL WHERE id=?", (task["id"],))
@@ -445,37 +480,59 @@ class TaskService:
 
     def finish_run(self, run_id: str, status: str = "succeeded", error: str | None = None) -> None:
         with self.store.transaction() as db:
-            run = row(db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone())
-            if not run or run["status"] != "running":
-                return
-            if run["stop_requested"]:
-                status, error = "cancelled", None
-            task = self._task(db, run["task_id"])
-            if status == "succeeded" and task["state"] in {"todo", "in_progress"}:
-                status, error = "failed", "Agent exited without request_input or submit_for_review. Inspect its log and retry."
-            db.execute("UPDATE runs SET status=?,error=?,finished_at=? WHERE id=?",
-                       (status, error, time.time(), run_id))
-            db.execute('UPDATE subagent_activity SET finished_at=? WHERE run_id=? AND finished_at IS NULL',
-                       (time.time(), run_id))
-            self._event(db, f"run.{status}", task["id"], {"run_id": run_id, "error": error})
-            if error:
-                db.execute("UPDATE tasks SET last_error=? WHERE id=?", (error, task["id"]))
-                if task["state"] in {"in_progress", "todo", "ready_for_review"}:
-                    self._move(db, task, "waiting_on_input", "system", comment=error, internal=True)
-                else:
-                    self._comment(db, task["id"], error, "system", "system")
-                # Failure requires an explicit human retry; don't consume an already queued reply.
-                for queued in db.execute("SELECT id FROM runs WHERE task_id=? AND status='queued'", (task["id"],)):
-                    db.execute("UPDATE runs SET status='cancelled',finished_at=? WHERE id=?", (time.time(), queued[0]))
-                    self._event(db, "run.cancelled", task["id"], {"run_id": queued[0], "reason": "Previous run failed"})
+            self._finish_run(db, run_id, status, error)
 
-    def recover(self) -> None:
+    def _finish_run(self, db, run_id, status='succeeded', error=None):
+        run = row(db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone())
+        if not run or run["status"] != "running":
+            return
+        if run["stop_requested"]:
+            status, error = "cancelled", None
+        task = self._task(db, run["task_id"])
+        if status == "succeeded" and task["state"] in {"todo", "in_progress"}:
+            status, error = "failed", "Agent exited without request_input or submit_for_review. Inspect its log and retry."
+        db.execute("UPDATE runs SET status=?,error=?,finished_at=? WHERE id=?",
+                   (status, error, time.time(), run_id))
+        db.execute('UPDATE subagent_activity SET finished_at=? WHERE run_id=? AND finished_at IS NULL',
+                   (time.time(), run_id))
+        self._event(db, f"run.{status}", task["id"], {"run_id": run_id, "error": error})
+        if error:
+            db.execute("UPDATE tasks SET last_error=? WHERE id=?", (error, task["id"]))
+            if task["state"] in {"in_progress", "todo", "ready_for_review"}:
+                self._move(db, task, "waiting_on_input", "system", comment=error, internal=True)
+            else:
+                self._comment(db, task["id"], error, "system", "system")
+            # Failure requires an explicit human retry; don't consume an already queued reply.
+            for queued in db.execute("SELECT id FROM runs WHERE task_id=? AND status='queued'", (task["id"],)):
+                db.execute("UPDATE runs SET status='cancelled',finished_at=? WHERE id=?", (time.time(), queued[0]))
+                self._event(db, "run.cancelled", task["id"], {"run_id": queued[0], "reason": "Previous run failed"})
+
+
+    def resumable_desktop(self, run_id):
+        return self.store.one("SELECT r.* FROM runs r JOIN desktop_runs d ON d.run_id=r.id "
+                              "JOIN tasks t ON t.id=r.task_id WHERE r.id=? AND r.status='running' "
+                              "AND r.stop_requested=0 AND t.hidden=0 AND t.provider='codex'", (run_id,))
+
+    def recover(self) -> list[dict]:
+        desktop = []
         for run in self.store.all("SELECT id FROM runs WHERE status='running'"):
-            self.finish_run(run["id"], "interrupted",
-                            "The server stopped during this run. Its session and worktree are retained. "
-                            "Check the log and retry when ready; the task was not automatically rerun.")
+            retained = self.resumable_desktop(run['id'])
+            if retained:
+                with self.store.transaction() as db:
+                    db.execute("UPDATE desktop_runs SET queue_error=CASE WHEN queue_inflight=1 "
+                               "THEN 'Delivery interrupted; outcome unknown' ELSE queue_error END, "
+                               "next_attempt_at=CASE WHEN queue_inflight=1 AND delivery_attempts<3 "
+                               "THEN ? ELSE next_attempt_at END, queue_inflight=0 WHERE run_id=?",
+                               (time.time() + 1, run['id']))
+                retained['inputs'] = json.loads(retained['inputs'])
+                desktop.append(retained)
+            else:
+                self.finish_run(run["id"], "interrupted",
+                                "The server stopped during this run. Its session and worktree are retained. "
+                                "Check the log and retry when ready; the task was not automatically rerun.")
         with self.store.transaction() as db:
             db.execute("UPDATE outbox SET status='pending' WHERE status='working'")
+        return desktop
 
     def subscribe(self, url: str, types: list[str], secret: str = "") -> dict:
         if urlparse(url).scheme not in {"http", "https"} or not urlparse(url).hostname:

@@ -12,6 +12,7 @@ from .runners import CLIRunner, DemoRunner
 from .desktop import DesktopRunner
 from .service import TaskService
 from .store import row
+from .retries import retry_delay
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +33,10 @@ class Worker:
             self.lock.close()
             self.lock = None
             raise RuntimeError("Another ACP worker is already using this database; run one server worker only.")
-        self.service.recover()
-        self.tasks = [asyncio.create_task(self.run_loop(), name=f"agent-slot-{i}")
-                      for i in range(self.settings.max_concurrent_runs)]
+        retained = self.service.recover()
+        self.tasks = [asyncio.create_task(self.run_loop(retained[i] if i < len(retained) else None),
+                                         name=f"agent-slot-{i}")
+                      for i in range(max(self.settings.max_concurrent_runs, len(retained)))]
         self.tasks.append(asyncio.create_task(self.delivery_loop(), name="event-deliveries"))
 
     async def stop(self) -> None:
@@ -47,15 +49,16 @@ class Worker:
             self.lock.close()
             self.lock = None
 
-    async def run_once(self) -> bool:
-        run = self.service.claim_next()
+    async def run_once(self, retained=None) -> bool:
+        run = retained or self.service.claim_next()
         if not run:
             return False
         task = self.service.get_task(run["task_id"])
         try:
             await self.runners[task["provider"]].run(self.service, task, run)
         except asyncio.CancelledError:
-            self.service.finish_run(run["id"], "interrupted", "Server stopped. Review the retained worktree and retry.")
+            if not self.service.resumable_desktop(run["id"]):
+                self.service.finish_run(run["id"], "interrupted", "Server stopped. Review the retained worktree and retry.")
             raise
         except Exception as exc:
             logger.exception("Run %s failed", run["id"])
@@ -64,7 +67,9 @@ class Worker:
             self.service.finish_run(run["id"])
         return True
 
-    async def run_loop(self) -> None:
+    async def run_loop(self, retained=None) -> None:
+        if retained:
+            await self.run_once(retained)
         while True:
             try:
                 worked = await self.run_once()
@@ -92,11 +97,12 @@ class Worker:
             raise
         except Exception as exc:
             attempts = item["attempts"] + 1
-            failed = attempts >= self.settings.max_delivery_attempts
+            delay = retry_delay(exc, attempts)
+            failed = delay is None or attempts >= self.settings.max_delivery_attempts
             with self.service.store.transaction() as db:
                 db.execute("UPDATE outbox SET status=?,attempts=?,available_at=?,last_error=? WHERE id=?",
                            ("failed" if failed else "pending", attempts,
-                            time.time() + min(2 ** attempts, 300), str(exc), item["id"]))
+                            time.time() + (delay or 0), str(exc), item["id"]))
                 if failed and item["kind"] != "webhook":
                     self.service._event(db, "integration.failed", None,
                                         {"delivery_id": item["id"], "kind": item["kind"], "error": str(exc)})

@@ -41,7 +41,7 @@ the last worker error until restart; it does not change which instance receives 
 
 The service keeps running after the terminal closes. It does **not** restart
 automatically after a reboot or crash; run `acp start` again. Stopping interrupts
-active runs and retains their session references for explicit retry. Agent files stay where the agent created them. Closing a browser tab
+CLI runs and retains their session references for explicit retry. Active Codex desktop runs retain their run and chat identities across a service restart. Agent files stay where the agent created them. Closing a browser tab
 does not stop tasks. Interactive API documentation is at the reported URL plus
 `/docs`. Choose **Try a demo** to exercise input and review without an agent account.
 
@@ -215,6 +215,21 @@ The seven lanes are task states, not process states. Runs separately record queu
 
 The UI supports drag-and-drop, a keyboard-accessible lane selector, comments, answer-and-resume, change requests, outputs, run logs, task edits, stop/unqueue, session reset, event subscriptions, and Linear import. State/comment changes publish persisted events; the UI receives server-sent events.
 
+## Safe command retries
+
+Task creation, comments (including answer-and-resume), input requests, review
+submissions, and change requests accept an `Idempotency-Key` header. ACP commits
+the mutation and its response together; replaying the same key and payload returns
+the original result, including after restart. Reusing a key with different input
+returns 409. CLI commands expose `--request-id` and MCP writes expose `request_id`
+for retries across separate invocations. Use the same identifier for the same intent.
+
+The browser retains an unresolved command key across reloads in the same tab.
+Browser, CLI, and MCP transport retries reuse their key, make at most three attempts,
+and refuse replay if the server loses receipt support. Long Retry-After windows
+return control to the caller. Other writes are not automatically replayed. This is
+not a claim that every API operation or external side effect is exactly-once.
+
 ## Run tasks in the Codex app
 
 Queue acceptance, dispatcher claim, and task start are separate milestones. A saved
@@ -224,18 +239,23 @@ minutes ACP adds one actionable delay comment; it does not expire the approved w
 The execution timeout begins only when the task chat checks in. Task details show
 the milestones, and pending desktop work is excluded from the board's running count.
 
-For an unclaimed dispatch, use **Retry delivery** in task details, or
+Use **Retry delivery** (or **Reconcile handoff** after a claim) in task details, or
 `acp desktop recover RUN_ID`. This queues delivery for the same active run, with a
 30-second retry throttle. It does not create a new run or reapply approval. If Codex
 still has not claimed it, open the configured dispatcher chat and resolve its resume
 or approval request. Queueing alone is not a documented desktop wake guarantee.
-Once claimed, inspect the dispatcher and retained task chat instead: recovery never
-resends a claimed task prompt. A duplicate dispatcher message can only observe the
-bound chat or report an uncertain handoff. Canceled and terminal runs stay revoked;
+Before sending a task prompt, preparation grants one send and persists its handoff
+marker. Repeated notifications resume preparation only before that grant; after it,
+they observe the bound chat or require evidence of the exact marker to reconcile
+an uncertain handoff. Missing partial history never authorizes a blind resend. Canceled and terminal runs stay revoked;
 retry those through the normal answer-and-resume flow to create a new run.
 
-This handles a **Codex app** restart while ACP remains running. Restarting the ACP
-service still interrupts active runs and requires an explicit retry, as before.
+Both Codex app and ACP service restarts retain active desktop runs. ACP reattaches
+to the same run and chat, preserving the original execution deadline. Dispatcher
+notification failures have three durable attempts with backoff; permanent failures
+and exhausted budgets require explicit recovery. Restarting does not reset the
+budget or bypass a pending retry deadline. Health and task details expose waiting
+work, unresolved handoffs, and exhausted delivery instead of reporting them ready.
 Waiting desktop work retains the existing serialized dispatcher slot until it starts
 or is canceled; the UI never reports waiting time as task execution.
 
@@ -455,7 +475,7 @@ curl -sS 'http://127.0.0.1:8765/api/events?after=100&limit=200'
 
 Patterns use shell-style matching: `comment.*`, `run.*`, or `*`. Each delivery includes the event's stable `id`, `schema_version`, `type`, `task_id`, `origin`, `data`, and `created_at`. Subscribers should deduplicate by event ID and use a task-state event's `data.version` to ignore stale updates. SSE supports `Last-Event-ID` and the `after` query parameter.
 
-Delivery is **at least once**, not exactly once. HTTP failures retry with exponential backoff, up to eight attempts, then become visible failed deliveries. A retry can arrive after a later event. Consumers must not assume global ordering. With a subscription secret, verify the raw-body HMAC-SHA256 in `X-ACP-Signature` (hex digest with `sha256=` prefix). `X-ACP-Delivery` identifies the outbox delivery.
+Delivery is **at least once**, not exactly once. Transient HTTP failures retry with jittered exponential backoff and honor Retry-After, up to eight attempts, then become visible failed deliveries. Permanent HTTP failures fail immediately. Completed deliveries cannot be manually replayed; retrying an already pending delivery is a no-op. A retry can arrive after a later event. Consumers must not assume global ordering. With a subscription secret, verify the raw-body HMAC-SHA256 in `X-ACP-Signature` (hex digest with `sha256=` prefix). `X-ACP-Delivery` identifies the outbox delivery.
 
 Deleting a subscription prevents its undelivered jobs from sending. All event history and logs are retained in v0.1; there is no automatic retention cleanup.
 
@@ -619,7 +639,7 @@ The worker starts agents and routes events; it never asks a separate agent to cl
 
 A database uniqueness constraint prevents concurrent live runs on the same task; follow-up inputs coalesce into one pending run. A process lock prevents two app workers against the same database. Do not run Uvicorn with multiple workers or live-reload for this app.
 
-After a restart, interrupted runs become Waiting on Input with an explanation. Queued work is retained. Interrupted code-writing runs do **not** automatically retry: inspect the agent chat and files, then move to Todo or answer the blocker. Delivery jobs, unlike agent runs, are safe to retry with stable deduplication IDs.
+After a restart, active Codex desktop runs retain their identities and resume observation. Interrupted CLI runs become Waiting on Input with an explanation. Queued work is retained. Interrupted code-writing runs do **not** automatically retry: inspect the agent chat and files, then move to Todo or answer the blocker. Delivery jobs, unlike agent runs, are safe to retry with stable deduplication IDs.
 
 Back up the data directory with the server stopped (SQLite WAL files matter for live copies), plus any worktrees and provider session storage you need. Secrets are not included in this source package; runtime `.env` files, database contents, logs, and code outputs can contain sensitive information. No automatic backup, migrations between future schema versions, worktree cleanup, or multi-host execution is included.
 

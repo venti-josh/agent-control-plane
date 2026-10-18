@@ -140,3 +140,45 @@ async def test_slow_linear_scan_leaves_time_to_drain_outbox(service, monkeypatch
     with pytest.raises(asyncio.CancelledError):
         await worker.delivery_loop()
     assert len(scans)==1
+
+
+@pytest.mark.parametrize('status', [400, 401, 403, 404, 422])
+async def test_permanent_delivery_failure_does_not_retry(service, status):
+    service.subscribe('https://receiver.example/hook', ['task.created'])
+    service.create_task('Permanent failure')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(status))) as client:
+        worker = Worker(service)
+        await worker.deliver_once(Integrations(service, client))
+    item = service.store.one('SELECT * FROM outbox')
+    assert item['status'] == 'failed'
+    assert item['attempts'] == 1
+
+
+async def test_rate_limit_respects_retry_after(service):
+    service.subscribe('https://receiver.example/hook', ['task.created'])
+    service.create_task('Rate limited')
+    before = time.time()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda r: httpx.Response(429, headers={'Retry-After': '90'}))) as client:
+        worker = Worker(service)
+        await worker.deliver_once(Integrations(service, client))
+        assert not await worker.deliver_once(Integrations(service, client))
+    item = service.store.one('SELECT * FROM outbox')
+    assert item['status'] == 'pending'
+    assert item['available_at'] >= before + 90
+
+
+def test_retry_only_reschedules_failed_delivery_and_pending_retry_is_noop(client):
+    service = client.app.state.service
+    service.receive('test', 'retry-1', {}, 'test')
+    item = service.store.one('SELECT * FROM outbox')
+    path = f"/api/deliveries/{item['id']}/retry"
+    with service.store.transaction() as db:
+        db.execute("UPDATE outbox SET status='done'")
+    assert client.post(path).status_code == 409
+    with service.store.transaction() as db:
+        db.execute("UPDATE outbox SET status='failed',attempts=8")
+    assert client.post(path).status_code == 200
+    first = service.store.one('SELECT * FROM outbox')
+    assert client.post(path).status_code == 200
+    assert service.store.one('SELECT * FROM outbox') == first

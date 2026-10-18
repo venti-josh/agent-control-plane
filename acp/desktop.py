@@ -13,6 +13,7 @@ from uuid import UUID
 from .config import config_path
 from .runners import CLIRunner, build_prompt
 from .service import DomainError
+from .retries import retry_delay
 
 
 def thread_id(value):
@@ -28,7 +29,25 @@ class DesktopBridge:
 
     def status(self):
         saved = self.store.one("SELECT value FROM metadata WHERE key='codex_dispatcher'")
+        runs = self.store.all("SELECT d.*,r.status,r.started_at,r.created_at,r.stop_requested FROM desktop_runs d "
+                              "JOIN runs r ON r.id=d.run_id WHERE (r.status='running' AND r.stop_requested=0) "
+                              "OR d.phase IN ('claimed','attached')")
+        active = [r for r in runs if r['status'] == 'running' and not r['stop_requested']]
+        waiting = [r for r in active if r['started_at'] is None]
+        unresolved = [r for r in runs if (r['status'] != 'running' or r['stop_requested']) or
+                      (r['phase'] == 'claimed' and r['send_started_at'] is not None and
+                       time.time() - r['send_started_at'] >= 120)]
+        failed = [r for r in active if r['queue_error'] and r['next_attempt_at'] is None and not r['queue_inflight']]
+        overdue = [r for r in waiting if time.time() - r['created_at'] >= 120]
+        state = ('needs_reconciliation' if unresolved else 'delivery_failed' if failed else
+                 'awaiting_dispatcher' if any(r['phase'] == 'dispatched' for r in waiting) else
+                 'awaiting_task_start' if waiting else 'observing' if active else
+                 'configured' if saved else 'disconnected')
         return {'connected': bool(saved), 'thread_id': saved['value'] if saved else None,
+                'state': state, 'waiting_runs': len(waiting),
+                'oldest_waiting_seconds': max([max(0, time.time() - r['created_at']) for r in waiting], default=0),
+                'requires_attention': bool(unresolved or failed or overdue),
+                'attention_run_ids': list(dict.fromkeys(r['run_id'] for r in unresolved + failed + overdue)),
                 'instructions': self.setup_prompt()}
 
     def command(self):
@@ -90,6 +109,39 @@ class DesktopBridge:
         return True
 
     async def queue(self, run_id):
+        with self.store.transaction() as db:
+            self._require_active(db, run_id)
+            entry = db.execute('SELECT * FROM desktop_runs WHERE run_id=?', (run_id,)).fetchone()
+            if not entry or entry['queue_inflight']:
+                raise DomainError('Delivery is already in progress or was not dispatched.')
+            attempt = entry['delivery_attempts'] + 1
+            db.execute('UPDATE desktop_runs SET delivery_attempts=?,queue_inflight=1,next_attempt_at=NULL '
+                       'WHERE run_id=?', (attempt, run_id))
+        try:
+            result = await self._send_queue(run_id)
+        except (OSError, TimeoutError, DomainError, asyncio.CancelledError) as exc:
+            delay = None if isinstance(exc, FileNotFoundError) else retry_delay(exc, attempt)
+            next_attempt = time.time() + delay if delay is not None and attempt < 3 else None
+            error = str(exc) or type(exc).__name__
+            with self.store.transaction() as db:
+                db.execute('UPDATE desktop_runs SET queue_error=?,next_attempt_at=? WHERE run_id=?',
+                           (error, next_attempt, run_id))
+                run = db.execute('SELECT * FROM runs WHERE id=?', (run_id,)).fetchone()
+                if next_attempt is None and run['status'] == 'running' and not run['stop_requested']:
+                    self.service._comment(db, run['task_id'],
+                        'Dispatcher delivery needs attention: ' + error +
+                        '. The run remains active. Check the executable and dispatcher, then use Retry delivery.',
+                        'system', 'system')
+            raise
+        else:
+            with self.store.transaction() as db:
+                db.execute('UPDATE desktop_runs SET queue_error=NULL,next_attempt_at=NULL WHERE run_id=?', (run_id,))
+            return result
+        finally:
+            with self.store.transaction() as db:
+                db.execute('UPDATE desktop_runs SET queue_inflight=0 WHERE run_id=?', (run_id,))
+
+    async def _send_queue(self, run_id):
         # Queue acceptance is delivery evidence, never proof of readiness or execution.
         self.active(run_id)
         connection = self.status()
@@ -126,14 +178,13 @@ class DesktopBridge:
         with self.store.transaction() as db:
             self._require_active(db, run_id)
             entry = db.execute('SELECT * FROM desktop_runs WHERE run_id=?', (run_id,)).fetchone()
-            if not entry or entry['phase'] != 'dispatched':
-                raise DomainError('This run is already claimed or was not dispatched. Inspect the retained '
-                                  'chat in Codex; do not resend its task prompt.')
-            if entry['queue_accepted_at'] is None:
+            if not entry or entry['phase'] == 'complete':
+                raise DomainError('This run cannot be recovered; inspect its recorded completion.')
+            if entry['queue_inflight'] or (entry['queue_accepted_at'] is None and not entry['queue_error']):
                 raise DomainError('Wait for the initial delivery to finish before retrying.')
             if entry['recovery_at'] is not None and time.time() - entry['recovery_at'] < 30:
                 raise DomainError('Delivery recovery was just requested. Wait 30 seconds before retrying.')
-            db.execute('UPDATE desktop_runs SET recovery_at=? WHERE run_id=?', (time.time(), run_id))
+            db.execute('UPDATE desktop_runs SET recovery_at=?,delivery_attempts=0 WHERE run_id=?', (time.time(), run_id))
         # A concurrent claim can only turn this message into observe/uncertain, never another prompt.
         return await self.queue(run_id)
 
@@ -162,14 +213,15 @@ class DesktopBridge:
             entry = db.execute('SELECT * FROM desktop_runs WHERE run_id=?', (run_id,)).fetchone()
             if not entry:
                 raise DomainError('Run was not dispatched', 404)
-            if entry['phase'] != 'dispatched':
-                return {'action': 'observe' if entry['thread_id'] else 'uncertain',
-                        'session_id': entry['thread_id'], 'run_id': run_id}
+            if entry['phase'] in {'attached', 'complete'}:
+                return {'action': 'observe', 'session_id': entry['thread_id'], 'run_id': run_id}
+            if entry['phase'] == 'claimed' and entry['send_started_at'] is not None:
+                return self.reconciliation(run_id, entry['thread_id'])
             previous = db.execute("SELECT 1 FROM desktop_runs d JOIN runs r ON r.id=d.run_id "
                                   "WHERE r.task_id=? AND d.thread_id=? AND d.phase='complete'",
                                   (task['id'], task['session_id'])).fetchone()
             session = task['session_id'] if previous else None
-            db.execute("UPDATE desktop_runs SET phase='claimed',thread_id=?,claimed_at=? WHERE run_id=?",
+            db.execute("UPDATE desktop_runs SET phase='claimed',thread_id=?,claimed_at=coalesce(claimed_at,?) WHERE run_id=?",
                        (session, time.time(), run_id))
             self.service._event(db, 'desktop.claimed', task['id'], {'run_id': run_id})
         from .repositories import catalog
@@ -224,8 +276,27 @@ class DesktopBridge:
             'repository remote, create or update the PR, and report its canonical URL with '
             '`review --text "result and verification" --output-url PR_URL --kind pr`. A local commit or a plan to open a PR '
             'does not complete that outcome. Follow repository instructions and normal app approvals.\n')
-        return {'task_id': task['id'], 'repo_path': task['repo_path'],
-                'prompt': build_prompt(task, run, connector), 'title': f"ACP: {task['title']}"}
+        prompt = f'ACP handoff {run_id}\n' + build_prompt(task, run, connector)
+        with self.store.transaction() as db:
+            self._require_active(db, run_id)
+            entry = db.execute('SELECT * FROM desktop_runs WHERE run_id=?', (run_id,)).fetchone()
+            if not entry or entry['phase'] != 'claimed':
+                raise DomainError('Claim the handoff before preparing a prompt.')
+            if entry['send_started_at'] is not None:
+                return self.reconciliation(run_id, entry['thread_id'])
+            db.execute('UPDATE desktop_runs SET send_started_at=? WHERE run_id=?', (time.time(), run_id))
+        return {'action': 'send', 'task_id': task['id'], 'repo_path': task['repo_path'],
+                'prompt': prompt, 'title': f"ACP: {task['title']}"}
+
+    @staticmethod
+    def reconciliation(run_id, session):
+        return {'action': 'reconcile', 'run_id': run_id, 'session_id': session,
+                'marker': f'ACP handoff {run_id}',
+                'instructions': 'Inspect the retained chat, or list chats if creation was interrupted. '
+                'Bind only a chat with evidence of this exact handoff marker or task check-in. '
+                'Never resend on absence from a partial history. If delivery cannot be established, '
+                'report the unresolved handoff and leave it active for inspection.'}
+
 
     def bind(self, run_id, session):
         session = thread_id(session)
@@ -248,11 +319,19 @@ class DesktopBridge:
             self.service.mark_started(run_id)
         return result
 
-    def action(self, run_id, session, action, text='', output_url='', kind='text'):
-        task, _ = self.active(run_id)
+    def action(self, run_id, session, action, text='', output_url='', kind='text', idempotency_key=None):
         entry = self.store.one('SELECT * FROM desktop_runs WHERE run_id=?', (run_id,))
-        if not entry or entry['thread_id'] != thread_id(session) or entry['phase'] != 'attached':
+        if not entry or entry['thread_id'] != thread_id(session) or entry['phase'] not in {'attached', 'complete'}:
             raise DomainError('Chat is not bound to this run')
+        run = self.store.one('SELECT task_id FROM runs WHERE id=?', (run_id,))
+        if action == 'comment':
+            return self.service.add_comment(run['task_id'], text, run_id=run_id, idempotency_key=idempotency_key)
+        if action == 'input':
+            return self.service.request_input(run['task_id'], text, run_id, idempotency_key=idempotency_key)
+        if action == 'review':
+            return self.service.submit_for_review(run['task_id'], text, output_url, kind, run_id,
+                                                  idempotency_key=idempotency_key)
+        task, _ = self.active(run_id)
         if action == 'activity':
             from .activity import Activity, RUNNING, WAITING, ENDED
             try:
@@ -268,12 +347,6 @@ class DesktopBridge:
             return {'recorded': True}
         if action == 'get':
             return task
-        if action == 'comment':
-            return self.service.add_comment(task['id'], text, run_id=run_id)
-        if action == 'input':
-            return self.service.request_input(task['id'], text, run_id)
-        if action == 'review':
-            return self.service.submit_for_review(task['id'], text, output_url, kind, run_id)
         raise DomainError('Unknown desktop task action', 422)
 
     def steering(self, run_id):
@@ -339,7 +412,7 @@ class DesktopBridge:
                     (run_id,)).fetchone()):
                 raise DomainError('Reconcile pending comments before acknowledging this run')
             db.execute("UPDATE desktop_runs SET phase='complete' WHERE run_id=?", (run_id,))
-        self.service.finish_run(run_id, 'failed' if error else 'succeeded', error or None)
+            self.service._finish_run(db, run_id, 'failed' if error else 'succeeded', error or None)
         return {'acknowledged': True}
 
     def dispatcher_prompt(self, run_id):
@@ -348,10 +421,13 @@ class DesktopBridge:
                 f'First run {cmd} claim {run_id}. If revoked, stop. For sandbox/network permission errors, '
                 'request normal execution approval and retry; do not treat a transport error as a revoked run. '
                 'Use the returned action:\n'
-                '- uncertain: do not create anything; report that a previous dispatch needs reconciliation.\n'
+                '- reconcile: follow the returned reconciliation instructions using list_threads/read_thread. '
+                f'If delivery of this exact handoff is confirmed, run {cmd} bind {run_id} --thread THREAD_ID '
+                'and observe. If uncertain, leave the run active and report the blocker; do not create or resend.\n'
                 '- observe: only observe the supplied chat, never send its prompt again.\n'
                 '- create/resume: choose the repository from task.repo_path or the supplied catalog, '
-                f'then run {cmd} prepare {run_id} [--repo ABSOLUTE_PATH] to get the exact task prompt. '
+                f'then run {cmd} prepare {run_id} [--repo ABSOLUTE_PATH] to get a send-once grant. '
+                'Only action=send permits creating or continuing a chat. If action=reconcile, follow its instructions instead. '
                 'If ambiguous, report an error with acknowledge rather than guessing. '
                 'For create, call list_projects and use a matching local project with environment local; '
                 'otherwise use projectless. Call create_thread exactly once with the returned title and prompt. '
@@ -379,7 +455,7 @@ class DesktopBridge:
                 'the task remains Waiting on Input or Ready for Review until the user acts. '
                 'This acknowledgement is part of the authorized workflow and needs no additional confirmation. '
                 'Never acknowledge while the chat is still running. Do not do task work yourself. '
-                'If interrupted before binding, reconcile the chat through list_threads before another creation.')
+                'If interrupted before binding, reconcile the exact handoff marker through list_threads/read_thread; never blindly resend.')
 
 
 class DesktopRunner:
@@ -391,14 +467,28 @@ class DesktopRunner:
                     'SELECT 1 FROM desktop_runs WHERE thread_id=?', (task['session_id'],)):
                 raise DomainError('Reconnect the Codex dispatcher to continue this app chat, or reset its session first.')
             return await CLIRunner().run(service, task, run)
-        bridge.dispatch(run['id'])
-        await bridge.queue(run['id'])
+        existing = service.store.one('SELECT * FROM desktop_runs WHERE run_id=?', (run['id'],))
+        if existing and existing['phase'] == 'complete':
+            return
+        if not existing:
+            bridge.dispatch(run['id'])
+        if not existing or not existing['queue_error']:
+            try:
+                await bridge.queue(run['id'])
+            except (OSError, TimeoutError, DomainError):
+                pass  # Durable delivery state controls retries and exposes exhausted attempts.
         queued_at = time.monotonic()
         deadline = None
         while True:
             current = service.store.one('SELECT * FROM runs WHERE id=?', (run['id'],))
             if current['status'] != 'running' or current['stop_requested']:
                 return
+            delivery = service.store.one('SELECT * FROM desktop_runs WHERE run_id=?', (run['id'],))
+            if delivery['next_attempt_at'] is not None and delivery['next_attempt_at'] <= time.time():
+                try:
+                    await bridge.queue(run['id'])
+                except (OSError, TimeoutError, DomainError):
+                    pass
             now = time.monotonic()
             if not current['started_at']:
                 if now - queued_at >= 120:

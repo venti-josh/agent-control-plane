@@ -28,7 +28,7 @@ def test_connection_validates_uuid_and_refuses_active_replacement(service):
         bridge.connect(str(uuid4()))
 
 
-def test_claim_is_once_and_existing_cli_session_is_not_adopted(service):
+def test_claim_before_preparation_is_recoverable_and_cli_session_is_not_adopted(service):
     bridge = desktop(service)
     bridge.connect(str(uuid4()))
     task, job = run(service)
@@ -37,7 +37,7 @@ def test_claim_is_once_and_existing_cli_session_is_not_adopted(service):
     first = bridge.claim(job['id'])
     assert first['action'] == 'create'
     assert first['session_id'] is None
-    assert bridge.claim(job['id'])['action'] == 'uncertain'
+    assert bridge.claim(job['id'])['action'] == 'create'
     assert service.get_task(task['id'])['state'] == 'todo'
 
 
@@ -173,6 +173,13 @@ def test_reconcile_chat_created_just_before_cancel_or_restart(service, recover):
     else:
         service.cancel(task['id'])
         service.finish_run(job['id'])
+    if recover:
+        bridge.started(job['id'], created_chat)
+        bridge.action(job['id'], created_chat, 'review', text='Resumed after service restart')
+        bridge.complete(job['id'], created_chat)
+        assert service.get_task(task['id'])['session_id'] == created_chat
+        assert service.get_task(task['id'])['runs'][0]['status'] == 'succeeded'
+        return
     state = service.get_task(task['id'])['state']
     bridge.bind(job['id'], created_chat)
     bridge.complete(job['id'], created_chat)
@@ -310,8 +317,8 @@ async def test_recovery_retains_approved_followup_and_never_replays_claimed_prom
     assert len(service.get_task(task['id'])['runs']) == 2
     assert service.get_task(task['id'])['runs'][0]['inputs'][0]['trigger'] == 'input'
     assert bridge.claim(following['id'])['session_id'] == session
-    assert bridge.claim(following['id'])['action'] == 'observe'
-    with pytest.raises(DomainError, match='claimed'):
+    assert bridge.claim(following['id'])['action'] == 'resume'
+    with pytest.raises(DomainError, match='30 seconds'):
         await bridge.recover(following['id'])
     bridge.started(following['id'], session)
     assert len(service.get_task(task['id'])['runs']) == 2
@@ -357,6 +364,7 @@ async def test_prepare_delegates_workspace_without_touching_repository(service, 
     bridge = desktop(service)
     task = service.create_task('Initialize project', repo_path=str(repo), provider='codex', state='todo')
     job = service.claim_next()
+    bridge.dispatch(job['id']); bridge.claim(job['id'])
     prepared = await bridge.prepare(job['id'])
     assert prepared['repo_path'] == str(repo)
     task = service.get_task(task['id'])
@@ -434,7 +442,7 @@ def test_waiting_evidence_survives_store_reopen_and_notice_is_once(service):
     restored.delayed(job['id'])
     assert len(reopened.get_task(task['id'])['comments']) == 1
     assert restored.claim(job['id'])['action'] == 'create'
-    assert restored.claim(job['id'])['action'] == 'uncertain'
+    assert restored.claim(job['id'])['action'] == 'create'
     assert reopened.get_task(task['id'])['runs'][0]['desktop']['dispatched_at'] is not None
 
 
@@ -491,4 +499,5 @@ async def test_recovery_waits_for_initial_delivery_to_settle(service, tmp_path, 
             await bridge.recover(job['id'])
     finally:
         release.set()
-        await asyncio.gather(pending, return_exceptions=True)
+        service.cancel(task["id"])
+        await asyncio.wait_for(asyncio.gather(pending, return_exceptions=True), 3)
