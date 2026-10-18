@@ -75,7 +75,7 @@ function drawBoard() {
   $('running-count').textContent = running ? `${running} running` : '';
   $('board').innerHTML = config.states.map(state => {
     const cards = tasks.filter(t => t.state === state.id);
-    return `<div class="lane" data-state="${state.id}" aria-label="${state.label}"><div class="lane-heading"><span class="lane-dot"></span>${state.label}<span class="lane-count">${cards.length}</span></div>${cards.map(t => `<button class="card" draggable="true" data-id="${t.id}" aria-label="Open ${esc(t.title)}"><span class="card-top"><span>${esc(t.linear_url ? 'LINEAR' : 'TASK')} ${t.id.slice(0,6).toUpperCase()}</span><span>···</span></span><span class="card-title">${esc(t.title)}</span><span class="card-desc">${esc(t.description)}</span><span class="card-bottom"><span class="provider ${t.provider}">${labels[t.provider]}</span><span class="run-status ${esc(t.run_status)}">${esc(runLabel(t.run_status, t.run_started_at, t.desktop_phase))}</span></span></button>`).join('') || '<div class="empty-lane">Drop a task here</div>'}</div>`;
+    return `<div class="lane" data-state="${state.id}" aria-label="${state.label}"><div class="lane-heading"><span class="lane-dot"></span>${state.label}<span class="lane-count">${cards.length}</span></div>${cards.map(t => `<button class="card" draggable="true" data-id="${t.id}" aria-label="Open ${esc(t.title)}"><span class="card-top"><span>${esc(t.linear_url ? 'LINEAR' : 'TASK')} ${t.id.slice(0,6).toUpperCase()}</span><span>···</span></span><span class="card-title">${esc(t.title)}</span><span class="card-desc">${esc(t.description)}</span><span class="card-bottom"><span class="provider ${t.provider}">${labels[t.provider]}</span><span class="task-status ${esc(t.state)}">${esc(state.label)}</span></span></button>`).join('') || '<div class="empty-lane">Drop a task here</div>'}</div>`;
   }).join('');
   document.querySelectorAll('.card').forEach(card => {
     card.onclick = attempt(() => openTask(card.dataset.id));
@@ -137,11 +137,13 @@ function drawTask() {
   $('request-changes').hidden = task.state !== 'ready_for_review';
   $('task-runs').innerHTML = `<p class="hint">Session: ${esc(task.session_id || 'Not started')}<br>Workspace: ${esc(task.workspace || 'Managed by the agent')}</p>` + task.runs.map(r => {
     const d = r.desktop;
+    const current = ['queued','running'].includes(r.status);
+    const recorded = r.finished_at ? `Finished: ${time(r.finished_at)}` : `Queued: ${time(r.created_at)}`;
     const recoverable = r.status === 'running' && !r.stop_requested && d &&
       (!r.started_at || r.activity_finished_at || (d.queue_error && !d.next_attempt_at));
     const timing = d ? `<p class="hint">Dispatched: ${d.dispatched_at ? time(d.dispatched_at) : 'Unknown'} · Queue accepted: ${d.queue_accepted_at ? time(d.queue_accepted_at) : 'Not confirmed'} · Claimed: ${d.claimed_at ? time(d.claimed_at) : 'Not yet'} · Started: ${r.started_at ? time(r.started_at) : 'Not yet'}</p>` : '';
     const recovery = recoverable ? `<p class="hint">${d.phase === 'dispatched' ? 'Delivery is pending. Retry delivery keeps this same run. If it remains waiting, open the connected ACP dispatcher chat in Codex and resolve any resume or approval request.' : 'Inspect the dispatcher and retained task chat for approval or interrupted handoff. Do not resend the task prompt.'}</p>${!d.queue_inflight && (d.queue_accepted_at || d.queue_error) ? `<button type="button" data-recover-run="${esc(r.id)}">${d.phase === 'dispatched' ? 'Retry delivery' : 'Reconcile handoff'}</button>` : ''}` : '';
-    return `<div class="run"><span class="run-status ${esc(r.status)}">${esc(runLabel(r.status, r.started_at, d?.phase))}</span><code>${r.id.slice(0,8)}</code><span>${esc(r.trigger)}</span><a href="/api/runs/${r.id}/log" target="_blank" rel="noopener">View log ↗</a></div>${timing}${d?.queue_error ? `<p class="hint">Delivery attempt ${d.delivery_attempts}: ${esc(d.queue_error)}${d.next_attempt_at ? ' · Retry scheduled' : ' · Needs attention'}</p>` : ''}${recovery}`;
+    return `<div class="run"><span class="run-status ${esc(r.status)}">${current ? 'Current run' : 'Past run'}: ${esc(runLabel(r.status, r.started_at, d?.phase))}</span><code>${r.id.slice(0,8)}</code><span>${esc(r.trigger)}</span><a href="/api/runs/${r.id}/log" target="_blank" rel="noopener">View log ↗</a></div><p class="hint">${esc(recorded)}</p>${r.error ? `<p class="hint">Run error: ${esc(r.error)}</p>` : ''}${timing}${d?.queue_error ? `<p class="hint">Delivery attempt ${d.delivery_attempts}: ${esc(d.queue_error)}${d.next_attempt_at ? ' · Retry scheduled' : ' · Needs attention'}</p>` : ''}${recovery}`;
   }).join('');
   document.querySelectorAll('[data-recover-run]').forEach(button => {
     button.onclick = attempt(async () => {

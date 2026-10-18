@@ -207,8 +207,9 @@ def main():
                 app_task = svc.create_task('Delayed dispatcher', provider='codex', state='todo')
                 page.get_by_role('button', name='Open Delayed dispatcher', exact=True).click()
                 expect(page.locator('#task-runs')).to_contain_text('Awaiting dispatcher')
+                expect(page.get_by_role('button', name='Open Delayed dispatcher', exact=True).locator('.card-bottom')).to_contain_text('Todo')
                 expect(page.locator('#running-count')).to_have_text('')
-                page.get_by_text('Runs & session', exact=True).click()
+                page.get_by_text('Run history & session', exact=True).click()
                 page.get_by_role('button', name='Retry delivery', exact=True).click()
                 expect(page.locator('#toast')).to_contain_text('same run')
                 observed = svc.get_task(app_task['id'])
@@ -224,6 +225,8 @@ def main():
                 session = str(uuid4())
                 dispatcher.started(job['id'], session)
                 expect(page.locator('#running-count')).to_have_text('1 running')
+                expect(page.get_by_role('button', name='Open Delayed dispatcher', exact=True).locator('.card-bottom')).to_contain_text('In Progress')
+                expect(page.locator('#task-runs')).to_contain_text('Current run: running')
                 with svc.store.transaction() as db:
                     db.execute("UPDATE desktop_runs SET delivery_attempts=3,queue_error='Observation delivery failed',next_attempt_at=NULL,recovery_at=NULL WHERE run_id=?", (job['id'],))
                 page.evaluate('refresh()')
@@ -236,6 +239,37 @@ def main():
                 dispatcher.action(job['id'], session, 'review', text='Synthetic browser check complete')
                 dispatcher.complete(job['id'], session)
                 page.locator('[data-close="task-dialog"]').click()
+                # Reconciliation changes current task state, not historical run outcomes.
+                for lane, label, outcome in (
+                    ('done', 'Done', 'failed'),
+                    ('ready_for_review', 'Ready for Review', 'failed'),
+                    ('waiting_on_input', 'Waiting on Input', 'failed'),
+                    ('waiting_on_input', 'Waiting on Input', 'succeeded'),
+                    ('deploy', 'Deploy', 'succeeded'),
+                    ('planning', 'Planning', 'cancelled'),
+                ):
+                    item = svc.create_task(f'Status regression {lane} {outcome}')
+                    run_id = str(uuid4())
+                    with svc.store.transaction() as db:
+                        db.execute('UPDATE tasks SET state=? WHERE id=?', (lane, item['id']))
+                        db.execute("INSERT INTO runs(id,task_id,status,trigger,inputs,created_at,finished_at,error) VALUES(?,?,?,'todo','[]',?,?,?)",
+                                   (run_id, item['id'], outcome, time.time()-120, time.time()-60,
+                                    'Historical dispatcher timeout' if outcome == 'failed' else None))
+                    page.evaluate('refresh()')
+                    card = page.get_by_role('button', name='Open ' + item['title'], exact=True)
+                    expect(card.locator('.card-bottom')).to_contain_text(label)
+                    expect(card.locator('.run-status')).to_have_count(0)
+                    card.click()
+                    history = page.locator('details').filter(has=page.locator('#task-runs'))
+                    if history.get_attribute('open') is None:
+                        history.locator('summary').click()
+                    expect(history.locator('summary')).to_have_text('Run history & session')
+                    expect(page.locator('#task-runs .run')).to_contain_text('Past run: ' + outcome)
+                    expect(page.locator('#task-runs')).to_contain_text('Finished:')
+                    if outcome == 'failed':
+                        expect(page.locator('#task-runs')).to_contain_text('Run error: Historical dispatcher timeout')
+                    assert svc.get_task(item['id'])['runs'][0]['status'] == outcome
+                    page.locator('[data-close="task-dialog"]').click()
                 page.set_viewport_size({'width':390,'height':844})
                 expect(page.locator('.lane')).to_have_count(7)
                 assert not errors, errors
