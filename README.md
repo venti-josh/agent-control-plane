@@ -222,13 +222,26 @@ submissions, and change requests accept an `Idempotency-Key` header. ACP commits
 the mutation and its response together; replaying the same key and payload returns
 the original result, including after restart. Reusing a key with different input
 returns 409. CLI commands expose `--request-id` and MCP writes expose `request_id`
-for retries across separate invocations. Use the same identifier for the same intent.
+for an explicit command identity. Unresolved CLI/MCP writes automatically retain
+their request ID in a private local SQLite journal across process restarts. Retrying
+the identical server, path, and payload reuses that ID; errors also print it. Only
+payload hashes and opaque IDs are saved. Successful responses or definitive client
+errors clear the entry, so a later successful command can express a new intent.
+Keep the journal and use the same server URL and payload when recovering a lost
+response; changing them creates a different intent. `ACP_COMMAND_JOURNAL` can select
+a journal path; the default is `client-commands.sqlite3` under the ACP user home.
 
 The browser retains an unresolved command key across reloads in the same tab.
 Browser, CLI, and MCP transport retries reuse their key, make at most three attempts,
-and refuse replay if the server loses receipt support. Long Retry-After windows
+and refuse protected writes if the server lacks receipt support. Long Retry-After windows
 return control to the caller. Other writes are not automatically replayed. This is
 not a claim that every API operation or external side effect is exactly-once.
+
+Explicit answer-and-resume requires the expected blocker comment ID (`in_reply_to`
+in the API, `--blocker-id` in the CLI; obtain it with `acp show TASK_ID`). Replies
+to an earlier blocker are retained as context with `resume_queued: false`, without
+scheduling work. The browser pins an answer draft to its original blocker across
+live updates and explains when a stale answer was saved without resuming.
 
 ## Run tasks in the Codex app
 
@@ -236,7 +249,10 @@ Queue acceptance, dispatcher claim, and task start are separate milestones. A sa
 connection means **configured**, not ready. Accepted work stays active while awaiting
 the dispatcher or task check-in, including across a Codex app restart. After two
 minutes ACP adds one actionable delay comment; it does not expire the approved work.
-The execution timeout begins only when the task chat checks in. Task details show
+The execution timeout begins only when the task chat checks in and stops when
+it submits input or review. Dispatcher acknowledgment is tracked separately: a
+delay preserves the result and queued follow-ups, and after two minutes exposes
+an acknowledgment warning and same-chat reconciliation. Task details show
 the milestones, and pending desktop work is excluded from the board's running count.
 
 Use **Retry delivery** (or **Reconcile handoff** after a claim) in task details, or
@@ -419,7 +435,7 @@ acp list
 acp show TASK_ID
 acp move TASK_ID todo
 acp move TASK_ID waiting_on_input --comment "Which API version should we target?"
-acp answer TASK_ID "Use v2."
+acp answer TASK_ID "Use v2." --blocker-id BLOCKER_COMMENT_ID
 acp changes TASK_ID "Cover the error case in the test suite."
 acp comment TASK_ID "Extra context for the agent."
 acp cancel TASK_ID

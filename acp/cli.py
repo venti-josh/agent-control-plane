@@ -5,7 +5,6 @@ import json
 import os
 import sys
 import time
-from uuid import uuid4
 import webbrowser
 from collections import deque
 from pathlib import Path
@@ -14,6 +13,7 @@ import httpx
 
 from .config import STATES, Settings
 from .retries import retry_delay
+from .command_journal import PendingCommand
 
 
 def request(base: str, method: str, path: str, data: dict | None = None,
@@ -23,16 +23,37 @@ def request(base: str, method: str, path: str, data: dict | None = None,
          {'comments', 'request-input', 'submit-for-review', 'request-changes'}) or
         (path.startswith('/api/desktop/runs/') and path.endswith('/action') and
          (data or {}).get('action') in {'comment', 'input', 'review'}))
-    key = idempotency_key or (str(uuid4()) if mutation else None)
+    command = PendingCommand(base, method, path, data, idempotency_key) if mutation else None
+    try:
+        result = _request(base, method, path, data, command.key if command else None)
+    except RejectedCommand:
+        if command:
+            command.resolve()
+        raise
+    except Exception as exc:
+        if command:
+            raise RuntimeError(f'{exc} Unresolved request ID: {command.key}. Retry the identical command; '
+                               'its saved identity will be reused. Do not submit it with a new ID.') from exc
+        raise
+    if command:
+        command.resolve()
+    return result
+
+
+class RejectedCommand(RuntimeError):
+    pass
+
+
+def _request(base, method, path, data, key):
     with httpx.Client(timeout=30, trust_env=False) as client:
         for attempt in range(3):
             # Older servers ignore request keys. Never replay a write against one.
             protected = False
-            if mutation:
+            if key is not None:
                 health = client.get(base.rstrip('/') + '/api/health')
                 health.raise_for_status()
                 protected = 'command-receipts' in health.json().get('capabilities', [])
-                if (idempotency_key or attempt > 0) and not protected:
+                if not protected:
                     raise RuntimeError('This ACP server does not support idempotent commands; upgrade it first.')
             retryable = method == 'GET' or protected
             try:
@@ -50,7 +71,8 @@ def request(base: str, method: str, path: str, data: dict | None = None,
                         message = response.json().get('detail', response.text)
                     except ValueError:
                         message = response.text
-                    raise RuntimeError(f'HTTP {response.status_code}: {message}')
+                    error_type = RejectedCommand if response.status_code < 500 and response.status_code not in {408, 425, 429} else RuntimeError
+                    raise error_type(f'HTTP {response.status_code}: {message}')
                 return response.json()
             except (httpx.TransportError, ValueError):
                 if not retryable or attempt == 2:
@@ -91,6 +113,7 @@ def main() -> None:
     answer = sub.add_parser("answer")
     answer.add_argument("task_id")
     answer.add_argument("body")
+    answer.add_argument("--blocker-id", required=True, help="The blocker_comment_id of the question you are answering")
     changes = sub.add_parser("changes")
     changes.add_argument("task_id")
     changes.add_argument("feedback")
@@ -287,7 +310,7 @@ def main() -> None:
             result = request(base, "POST", f"/api/tasks/{args.task_id}/comments", {"body": args.body}, idempotency_key=args.request_id)
         elif args.command == "answer":
             result = request(base, "POST", f"/api/tasks/{args.task_id}/comments",
-                             {"body": args.body, "resume": True}, idempotency_key=args.request_id)
+                             {"body": args.body, "resume": True, "in_reply_to": args.blocker_id}, idempotency_key=args.request_id)
         elif args.command == "changes":
             result = request(base, "POST", f"/api/tasks/{args.task_id}/request-changes", {"feedback": args.feedback}, idempotency_key=args.request_id)
         elif args.command in {"cancel", "reset-session"}:

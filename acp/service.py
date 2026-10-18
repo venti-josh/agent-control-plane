@@ -328,13 +328,20 @@ class TaskService:
                 raise DomainError("Agent comments cannot resume themselves", 422)
             if resume and task["state"] != "waiting_on_input":
                 raise DomainError("Only a waiting task can be resumed")
+            if resume and not reply_to:
+                raise DomainError("An explicit answer requires the expected blocker comment ID.", 422)
             wake = not run_id and task["state"] == "waiting_on_input"
+            stale_reply = wake and reply_to is not None and reply_to != task["blocker_comment_id"]
             if wake and not reply_to:
                 reply_to = task["blocker_comment_id"]
             comment = self._comment(db, task_id, body, "agent" if run_id else "you",
                                     "agent" if run_id else "api", reply_to)
-            if not run_id:
+            if not run_id and not stale_reply:
                 self._route_comment(db, task, comment)
+            if resume:
+                comment["resume_queued"] = not stale_reply
+                if stale_reply:
+                    comment["notice"] = "Saved as context only: this answer refers to an earlier blocker. Answer the current question to resume."
             return comment
         return self._command(idempotency_key, 'add_comment', command, apply)
 

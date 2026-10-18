@@ -50,3 +50,8 @@ def reviewed(service, pr=False):
                               'pr' if pr else 'text', run['id'])
     service.finish_run(run['id'])
     return service.get_task(task['id']), run
+
+
+@pytest.fixture(autouse=True)
+def isolate_client_command_journal(tmp_path, monkeypatch):
+    monkeypatch.setenv('ACP_COMMAND_JOURNAL', str(tmp_path / 'client-commands.sqlite3'))
