@@ -233,6 +233,8 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True,
 
     @app.post('/api/desktop/runs/{run_id}/{operation}')
     async def desktop_run(run_id: str, operation: str, data: DesktopRequest):
+        if operation == 'recover':
+            return await desktop.recover(run_id)
         if operation == 'claim':
             return await asyncio.to_thread(desktop.claim, run_id)
         if operation == 'steering':
