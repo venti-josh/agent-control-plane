@@ -17,6 +17,8 @@ from pathlib import Path
 EVENTS = ('SessionStart', 'SessionEnd', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse',
           'PermissionRequest', 'SubagentStart', 'SubagentStop', 'Stop', 'Interrupt')
 STALE_SECONDS = 300
+# Codex runs no hook when a turn ends in an error (e.g. a usage limit), so long silence ends the turn.
+EXPIRE_SECONDS = 1800
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value REAL);
 CREATE TABLE IF NOT EXISTS agents (
@@ -209,6 +211,9 @@ class CodexActivity:
                     owners[owner] = owner_alive(owner)
                 if owners[owner] is False:
                     self.close(db, row['id'], row['last_seen'])
+                elif now - row['last_seen'] > EXPIRE_SECONDS:
+                    # Resumable: a fresh tool start in the same turn is observed again.
+                    self.close(db, row['id'], row['last_seen'], resumable=True)
                 elif owners[owner] is None or now - row['last_seen'] > STALE_SECONDS:
                     self.transition(db, row['id'], 'unknown', row['last_seen'])
                     unknown += 1
@@ -231,7 +236,7 @@ class CodexActivity:
             last = db.execute("SELECT value FROM metadata WHERE key='last_event'").fetchone()
         available = since is not None and not unknown
         message = ('Codex hooks need trust or a new turn' if since is None else
-                   'Codex activity uncertain: stale hooks' if unknown else
+                   f'Codex activity uncertain: {unknown} silent agent{"s" * (unknown != 1)}' if unknown else
                    'Codex · approval status unconfirmed' if approvals else 'Codex · observed activity')
         return dict(source='codex_hooks', available=available, running=running, subagents=children,
                     waiting_on_input=waiting, approval_status_unconfirmed=approvals, unknown=unknown, averages=averages, message=message,
