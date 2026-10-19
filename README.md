@@ -91,7 +91,10 @@ excluded. Async questions do not pause an agent. Hooks do not provide an approva
 resolution event: a wait can remain observed until the tool returns, even after
 approval. Hosted tools may not emit every lifecycle hook. Activity silent for five
 minutes becomes **unavailable**, rather than presenting potentially stale counts;
-a fresh event restores it. A dead Codex process clears its counts.
+a fresh event from that agent restores it. Codex runs no hook when a turn ends in an
+error such as a usage limit, so an agent silent for 30 minutes is treated as finished
+and stops blocking the counts; a later tool start in the same turn is observed again.
+A dead Codex process clears its counts.
 
 Averages divide observed running agent-seconds by the full 30-minute, 1-hour, or
 3-hour window. Earlier activity and already-running chats cannot be reconstructed;
@@ -286,7 +289,9 @@ acp desktop instructions
 acp desktop status
 ```
 
-Keep the Codex app open. Codex tasks then run automatically in app chats, with the
+Keep the Codex app open with the ACP dispatcher chat open in a window: Codex
+delivers queued messages only to chats that are open, so a run queued while the
+dispatcher chat is closed waits until you open it. Codex tasks then run automatically in app chats, with the
 same chat resumed for answers and requested revisions. New human comments on
 In Progress tasks steer their existing active app chat automatically. The dispatcher
 checks for comments between 10-second waits and forwards them through the app's

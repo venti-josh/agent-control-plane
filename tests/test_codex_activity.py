@@ -86,6 +86,29 @@ def test_stale_observation_is_unknown_and_dead_process_is_not_waiting(tmp_path, 
     assert monitor.summary()['running'] == monitor.summary()['waiting_on_input'] == 0
 
 
+def test_turn_ended_without_hook_expires_instead_of_blocking_counts(tmp_path, monkeypatch):
+    # A usage-limit error ends Codex turns without Stop while the app process stays alive.
+    monitor, clock = tracker(tmp_path, monkeypatch)
+    monitor.record(event('UserPromptSubmit'), 'alive')
+    monitor.record(event('UserPromptSubmit', session='other'), 'alive')
+    clock[0] += 60
+    monitor.record(event('PreToolUse', tool_name='Bash'), 'alive')
+    monitor.record(event('Stop', session='other'), 'alive')
+    clock[0] += 400
+    summary = monitor.summary()
+    assert summary['available'] is False and summary['unknown'] == 1
+    assert summary['message'] == 'Codex activity uncertain: 1 silent agent'
+    clock[0] += 1500
+    summary = monitor.summary()
+    assert summary['available'] is True and summary['unknown'] == summary['running'] == 0
+    # Neither the stale gap nor the expiry wait is counted as running time.
+    assert summary['averages']['3h'] == pytest.approx((60 + 60) / 10800)
+    monitor.record(event('PostToolUse', tool_name='Bash'), 'alive')
+    assert monitor.summary()['running'] == 0
+    monitor.record(event('PreToolUse', tool_name='Bash'), 'alive')
+    assert monitor.summary()['running'] == 1
+
+
 def test_unknown_events_and_malformed_ids_do_not_produce_counts(tmp_path, monkeypatch):
     monitor, _ = tracker(tmp_path, monkeypatch)
     for payload in [[], {}, event('Unrecognized'), event('UserPromptSubmit',session=''),

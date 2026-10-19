@@ -67,7 +67,8 @@ class DesktopBridge:
                 'Follow each queued run instruction, and never create duplicate chats." '
                 'After create_thread returns its threadId, connect it by running: '
                 f'{self.command()} connect --thread THREAD_ID. Do not use a queued clientThreadId. '
-                'Keep the Codex app open while ACP is working.')
+                'Keep the Codex app running with the ACP dispatcher chat open in a window while ACP is '
+                'working: Codex delivers queued messages only to open chats.')
 
     def connect(self, value):
         value = thread_id(value) if value else None
@@ -199,9 +200,10 @@ class DesktopBridge:
             db.execute('UPDATE desktop_runs SET delayed_at=? WHERE run_id=?', (time.time(), run_id))
             if entry['phase'] == 'dispatched':
                 message = ('Awaiting Codex dispatcher: the queue accepted this run, but the dispatcher has '
-                           'not claimed it. The run remains active. Open ACP task details, expand Runs & session, and use Retry delivery; '
-                           'if still waiting, open the connected ACP dispatcher chat in Codex and resolve any '
-                           'resume or approval request. Do not create another task or reset its session.')
+                           'not claimed it. The run remains active. Codex delivers queued messages only to a chat '
+                           'open in a Codex window: open the connected ACP dispatcher chat in Codex and resolve any '
+                           'resume, approval, or usage-limit notice. If it still waits, open ACP task details, '
+                           'expand Runs & session, and use Retry delivery. Do not create another task or reset its session.')
             else:
                 message = ('Awaiting Codex task start: the dispatcher claimed this run, but its task chat has '
                            'not checked in. The run remains active. Inspect the dispatcher and retained task '
