@@ -69,21 +69,53 @@ simulated activity in the native panel within five
 seconds. The preview stays open until **Quit Comet**. Only this test
 server exposes mood controls; the normal overlay always follows actual activity.
 
-The tile observes **all local Codex chats and subagents**, including chats outside
-ACP, through user-level Codex lifecycle hooks. Install the hook handlers once:
+The tile observes **all local Codex and Claude Code chats and subagents**, including
+chats outside ACP, through user-level lifecycle hooks. Install the hook handlers once:
 
 ```sh
-acp activity install
+acp activity install --target all --dry-run   # review the exact settings diff first
+acp activity install --target all             # or --target codex / --target claude
 # In the Codex CLI: open /hooks, review and trust the ACP command handlers.
-# Then start a new turn or session.
-acp activity status
+# Then start a new Codex turn and a new Claude Code session.
+acp activity status                           # combined; --target codex|claude for one
 ```
+
+`--target` defaults to `codex`, so existing scripts keep their behavior.
 
 Codex requires explicit review of the exact hook commands; ACP never modifies
 hook trust. The installer preserves existing handlers and saves a backup beside
 `~/.codex/hooks.json`. Use `--codex-home PATH` for a custom Codex home. To remove
 only ACP's handlers, run `acp activity uninstall`. Install from the installed tool
 (or a persistent environment), since hooks use its absolute Python path.
+
+**Claude Code.** The Claude Code CLI, the Claude desktop app's Code tab, and the IDE
+extensions all read user hooks from `~/.claude/settings.json` (or
+`$CLAUDE_CONFIG_DIR/settings.json`; `--claude-config-dir PATH` overrides both). The
+installer adds only ACP's command entries under `hooks`, never touches permissions or
+any other setting, preserves existing handlers (including a symlinked settings file),
+keeps the file mode, and saves the original once as `settings.acp-backup-*.json`.
+Reinstalling is a no-op; `acp activity uninstall --target claude` removes only ACP's
+entries. New sessions pick up the hooks; sessions already open may keep the hooks
+they started with. The hook prints nothing (stdout from `SessionStart` and
+`UserPromptSubmit` hooks would become model context), always exits 0, and takes about
+0.1 s.
+
+Claude has no turn ID, so each event's `prompt_id` fences turns: a late `Stop`,
+`StopFailure`, or idle notification from an earlier prompt never closes a newer one.
+`StopFailure` (API errors such as a usage limit) ends the turn and its subagents.
+Approvals (`PermissionRequest`) and `AskUserQuestion` count as waiting until the tool
+returns. An interrupt, or rejecting an approval, ends a turn without any hook: the
+CLI's idle notification, the next prompt, the session ending, Claude Code's own
+session registry (`sessions/<pid>.json`, read only for an explicit idle status of the
+same process and session), or the silence timeouts below settle it. The owner is the
+`claude` process that ran the hook; the desktop app's long-lived `Claude` process is
+never used. Stored data matches Codex's and lives in `claude-activity.sqlite3`.
+
+Each source is summarized separately and then combined. `GET /api/activity` returns
+the combined counts plus `sources.codex` and `sources.claude`; the status line shows
+the split (for example `Codex 1 · Claude 2 running`). A source that was never observed,
+is silent, or fails to read never blanks the other: counters go unavailable only when
+no source is trustworthy.
 
 Running counts include observed root chats and subagents; waiting counts reflect
 explicit input/approval hooks. Idle, finished, failed, and queued board tasks are
@@ -94,15 +126,15 @@ minutes becomes **unavailable**, rather than presenting potentially stale counts
 a fresh event from that agent restores it. Codex runs no hook when a turn ends in an
 error such as a usage limit, so an agent silent for 30 minutes is treated as finished
 and stops blocking the counts; a later tool start in the same turn is observed again.
-A dead Codex process clears its counts.
+Claude agents follow the same rules. A dead Codex or Claude process clears its counts.
 
 Averages divide observed running agent-seconds by the full 30-minute, 1-hour, or
 3-hour window. Earlier activity and already-running chats cannot be reconstructed;
 coverage begins when trusted hooks receive new events. Counters refresh every five
 seconds. Only identifiers, process ownership, lifecycle states/tool names, and
-timestamps are stored in `codex-activity.sqlite3`; no prompts, transcripts, or tool
-outputs are retained. The hook runs locally, makes no network calls, and never
-approves tools or modifies Codex responses. Claude activity is not included.
+timestamps are stored in `codex-activity.sqlite3` and `claude-activity.sqlite3`; no
+prompts, transcripts, or tool outputs are retained. The hooks run locally, make no
+network calls, and never approve tools or modify agent responses.
 
 Comet plays dead below a 30-minute average of 1 (X eyes, limp tail, no motion),
 sighs with drooping ears and tears from 1 to below 2, flies happily from 2 to
@@ -456,7 +488,7 @@ The same operations are available through `TaskService` functions and HTTP. Main
 | --- | --- |
 | `POST /api/tasks` | Create a task in Planning or Todo. |
 | `GET /api/tasks` / `GET /api/tasks/{id}` | Board and complete task history. |
-| `GET /api/activity` | Current observed agent counts and time-weighted concurrency averages. |
+| `GET /api/activity` | Combined Codex and Claude agent counts, time-weighted concurrency averages, and per-source detail under `sources`. |
 | `PATCH /api/tasks/{id}` | Edit context/provider/repository, subject to active-run checks. |
 | `POST /api/tasks/{id}/transition` | Validate and commit a state change. |
 | `POST /api/tasks/{id}/comments` | Comment; human input steers active app chats or resumes waiting/review tasks. |
@@ -709,6 +741,7 @@ which live integrations were exercised.
 | `worker.py` | Run scheduling and retryable event delivery. |
 | `runners.py` | Claude/Codex CLI adapters, sessions, launch directories, logs. |
 | `codex_activity.py` | Global Codex hook installation and observed activity intervals. |
+| `claude_activity.py` | Global Claude Code hook installation, observed intervals, and the combined summary. |
 | `activity.py` | Legacy ACP-run activity accounting. |
 | `desktop.py` | Supported Codex app queue, dispatch lifecycle, run-scoped actions. |
 | `mcp_server.py` | Four task tools exposed over stdio. |

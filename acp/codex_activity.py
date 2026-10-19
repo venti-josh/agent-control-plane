@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import difflib
 import hashlib
 import json
 import os
@@ -86,8 +87,18 @@ def identifier(value):
 
 
 class CodexActivity:
+    SOURCE, LABEL = 'codex_hooks', 'Codex'
+    NOT_OBSERVED = 'Codex hooks need trust or a new turn'
+
     def __init__(self, path: Path):
         self.path = Path(path)
+
+    def alive(self, owner):
+        return owner_alive(owner)
+
+    def idle_since(self, row):
+        """When another trusted observation proved this agent idle; Codex has none."""
+        return None
 
     @contextmanager
     def connect(self):
@@ -208,9 +219,12 @@ class CodexActivity:
             for row in rows:
                 owner = row['owner']
                 if owner not in owners:
-                    owners[owner] = owner_alive(owner)
+                    owners[owner] = self.alive(owner)
+                idle = self.idle_since(row) if owners[owner] is not False else None
                 if owners[owner] is False:
                     self.close(db, row['id'], row['last_seen'])
+                elif idle is not None:
+                    self.close(db, row['id'], idle, resumable=True)
                 elif now - row['last_seen'] > EXPIRE_SECONDS:
                     # Resumable: a fresh tool start in the same turn is observed again.
                     self.close(db, row['id'], row['last_seen'], resumable=True)
@@ -235,23 +249,31 @@ class CodexActivity:
             since = db.execute("SELECT value FROM metadata WHERE key='since'").fetchone()
             last = db.execute("SELECT value FROM metadata WHERE key='last_event'").fetchone()
         available = since is not None and not unknown
-        message = ('Codex hooks need trust or a new turn' if since is None else
-                   f'Codex activity uncertain: {unknown} silent agent{"s" * (unknown != 1)}' if unknown else
-                   'Codex · approval status unconfirmed' if approvals else 'Codex · observed activity')
-        return dict(source='codex_hooks', available=available, running=running, subagents=children,
+        message = (self.NOT_OBSERVED if since is None else
+                   f'{self.LABEL} activity uncertain: {unknown} silent agent{"s" * (unknown != 1)}' if unknown else
+                   f'{self.LABEL} · approval status unconfirmed' if approvals else f'{self.LABEL} · observed activity')
+        return dict(source=self.SOURCE, available=available, running=running, subagents=children,
                     waiting_on_input=waiting, approval_status_unconfirmed=approvals, unknown=unknown, averages=averages, message=message,
                     observed_since=since[0] if since else None, last_event_at=last[0] if last else None)
 
 
-def atomic_json(path, data):
+def atomic_json(path, data, mode=None):
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, candidate = tempfile.mkstemp(dir=path.parent, prefix='.' + path.name)
     try:
         with os.fdopen(fd, 'w') as file:
             json.dump(data, file, indent=2); file.write('\n')
+        if mode is not None:
+            os.chmod(candidate, mode)
         os.replace(candidate, path)
     finally:
         Path(candidate).unlink(missing_ok=True)
+
+
+def json_diff(path, original, data):
+    before = original.decode().splitlines(keepends=True) if original is not None else []
+    after = (json.dumps(data, indent=2) + '\n').splitlines(keepends=True)
+    return ''.join(difflib.unified_diff(before, after, str(path), str(path) + ' (with ACP hooks)'))
 
 
 def hook_manifest(database):
@@ -275,7 +297,7 @@ def remove_entries(data, command):
             del data['hooks'][event]
 
 
-def install_hooks(home, database, executable):
+def install_hooks(home, database, executable, dry_run=False):
     home, database = Path(home), Path(database).resolve()
     path = home / 'hooks.json'
     original = path.read_bytes() if path.exists() else None
@@ -295,6 +317,8 @@ def install_hooks(home, database, executable):
     # Synchronous, fast, advisory hooks preserve ordering and never return decisions/context.
     for event in EVENTS:
         data['hooks'].setdefault(event, []).append({'hooks': [{'type':'command', 'command':command, 'timeout':2}]})
+    if dry_run:
+        return dict(hooks_file=str(path), dry_run=True, diff=json_diff(path, original, data))
     if original is not None:
         backup = path.with_name('hooks.acp-backup-' + hashlib.sha256(original).hexdigest()[:12] + '.json')
         if not backup.exists():

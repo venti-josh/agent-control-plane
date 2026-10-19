@@ -142,7 +142,7 @@ async def test_cli_stdout_subagent_activity_is_retained_but_not_used_for_codex_p
             assert data['running'] == 0 and data['subagents'] == 0
             assert data['averages']['30m'] > 0
             pet = (await api.get('/api/activity')).json()
-            assert pet['source'] == 'codex_hooks' and pet['available'] is False
+            assert pet['source'] == 'hooks' and pet['available'] is False
             assert pet['running'] == pet['waiting_on_input'] == 0
             intervals = svc.store.all('SELECT * FROM subagent_activity WHERE run_id IN '
                                       '(SELECT id FROM runs WHERE task_id=?)', (task['id'],))

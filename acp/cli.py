@@ -124,9 +124,14 @@ def main() -> None:
     events.add_argument("--after", type=int, default=0)
     events.add_argument("--follow", action="store_true")
     sub.add_parser("mcp")
-    activity = sub.add_parser('activity', help='Observe Codex agents across local chats using trusted hooks')
+    activity = sub.add_parser('activity', help='Observe Codex and Claude agents across local chats using hooks')
     activity.add_argument('activity_command', choices=['install', 'status', 'uninstall'])
+    activity.add_argument('--target', choices=['codex', 'claude', 'all'],
+                          help='Hook set to install or remove (default codex); status shows all unless given')
     activity.add_argument('--codex-home', type=Path, default=Path(os.getenv('CODEX_HOME', str(Path.home()/'.codex'))))
+    activity.add_argument('--claude-config-dir', type=Path,
+                          default=Path(os.getenv('CLAUDE_CONFIG_DIR') or str(Path.home()/'.claude')).expanduser())
+    activity.add_argument('--dry-run', action='store_true', help='Show the settings diff an install would write')
     linear = sub.add_parser('linear', help='Configure Linear from an agent or terminal; JSON output, no secrets')
     linear_sub = linear.add_subparsers(dest='linear_command', required=True)
     linear_sub.add_parser('status')
@@ -188,14 +193,26 @@ def main() -> None:
             return
         settings = Settings.from_env()
         if args.command == 'activity':
-            from .codex_activity import CodexActivity, install_hooks, uninstall_hooks
-            database = settings.data_dir / 'codex-activity.sqlite3'
-            if args.activity_command == 'install':
-                result = install_hooks(args.codex_home, database, sys.executable)
-            elif args.activity_command == 'uninstall':
-                result = uninstall_hooks(args.codex_home, database)
+            from . import claude_activity, codex_activity
+            trackers = {'codex': (codex_activity, codex_activity.CodexActivity, args.codex_home),
+                        'claude': (claude_activity, claude_activity.ClaudeActivity, args.claude_config_dir)}
+            if args.activity_command == 'status' and not args.target:
+                result = claude_activity.combined_summary(settings.data_dir)
             else:
-                result = CodexActivity(database).summary()
+                result = {}
+                for name in ['codex', 'claude'] if args.target == 'all' else [args.target or 'codex']:
+                    module, tracker, home = trackers[name]
+                    database = settings.data_dir / f'{name}-activity.sqlite3'
+                    if args.activity_command == 'install':
+                        result[name] = module.install_hooks(home, database, sys.executable, dry_run=args.dry_run)
+                    elif args.activity_command == 'uninstall':
+                        result[name] = module.uninstall_hooks(home, database)
+                    else:
+                        result[name] = tracker(database).summary()
+                if args.dry_run and args.activity_command == 'install':
+                    print(''.join(item['diff'] for item in result.values()) or 'No changes.', end='')
+                    return
+                result = result[name] if len(result) == 1 else result
             print(json.dumps(result, indent=2))
             return
         if args.command == 'overlay':

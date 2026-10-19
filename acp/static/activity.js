@@ -9,6 +9,7 @@ const activityOverlay = (() => {
   if (native) document.body.classList.add('native-overlay');
   const key = native ? 'acp.leo.native.v1' : 'acp.activity-overlay.v1';
   let prefs = {collapsed:false, hidden:false}, pointer = null, inFlight = null;
+  const reported = message => Object.assign(new Error(message), {reported:true});
   try {
     const saved = JSON.parse(localStorage.getItem(key));
     if (saved && typeof saved === 'object') prefs = {
@@ -95,7 +96,7 @@ const activityOverlay = (() => {
       const response = await fetch('/api/activity', {signal:controller.signal, cache:'no-store'});
       if (!response.ok) throw new Error('Activity unavailable');
       const data = await response.json();
-      if (data.available === false) throw new Error(data.message || 'Codex activity unavailable');
+      if (data.available === false) throw reported(data.message || 'Agent activity unavailable');
       if (![data.running, data.subagents, data.waiting_on_input, ...['30m','1h','3h'].map(k => data.averages?.[k])]
         .every(n => Number.isFinite(n) && n >= 0)) throw new Error('Invalid activity');
       document.getElementById('activity-running').textContent = data.running;
@@ -111,7 +112,7 @@ const activityOverlay = (() => {
       tile.classList.remove('is-unavailable');
       native?.postMessage({action:'metrics', data:{...data, mood}});
     } catch (error) {
-      status.textContent = error.message?.startsWith('Codex') ? error.message : 'Activity unavailable'; status.hidden = false; tile.classList.add('is-unavailable');
+      status.textContent = error.reported ? error.message : 'Activity unavailable'; status.hidden = false; tile.classList.add('is-unavailable');
       for (const id of ['running','waiting','30m','1h','3h']) document.getElementById(`activity-${id}`).textContent = '—';
       tile.dataset.mood = 'unavailable';
       cometPet.setMood('unavailable');
