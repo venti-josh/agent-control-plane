@@ -133,7 +133,8 @@ def test_api_ignores_failed_waiting_board_tasks(client):
     svc.finish_run(run['id'], 'failed', 'Never started')
     result=client.get('/api/activity').json()
     assert result['waiting_on_input'] == 0
-    assert result['source'] == 'codex_hooks'
+    assert result['sources']['codex']['source'] == 'codex_hooks'
+    assert result['sources']['claude']['source'] == 'claude_hooks'
     assert result['available'] is False
 
 

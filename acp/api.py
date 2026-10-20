@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__
-from .codex_activity import CodexActivity
+from .claude_activity import combined_summary
 from .config import LABELS, PROVIDERS, STATES, Settings
 from .integrations import Integrations, verify_signature
 from .service import DomainError, TaskService
@@ -284,7 +284,7 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True,
 
     @app.get("/api/activity")
     def activity():
-        return CodexActivity(settings.data_dir / 'codex-activity.sqlite3').summary()
+        return combined_summary(settings.data_dir)
 
     @app.post("/api/tasks", status_code=201)
     def create_task(body: CreateTask, idempotency_key: str | None = Header(default=None, alias='Idempotency-Key')):
