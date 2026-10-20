@@ -11,6 +11,7 @@ from pathlib import Path
 
 import httpx
 
+from . import __version__
 from .config import STATES, Settings
 from .retries import retry_delay
 from .command_journal import PendingCommand
@@ -83,6 +84,7 @@ def _request(base, method, path, data, key):
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="acp", description="Personal Claude/Codex task orchestration")
+    parser.add_argument('--version', action='version', version=f'acp {__version__}')
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ["serve", "hooks"]:
         server = sub.add_parser(name)
@@ -132,6 +134,13 @@ def main() -> None:
     activity.add_argument('--claude-config-dir', type=Path,
                           default=Path(os.getenv('CLAUDE_CONFIG_DIR') or str(Path.home()/'.claude')).expanduser())
     activity.add_argument('--dry-run', action='store_true', help='Show the settings diff an install would write')
+    update = sub.add_parser('update', help='Update this install to the latest release (or a local checkout) '
+                                           'and restart the service and overlay if they were running')
+    update.add_argument('--version', dest='target_version', metavar='X.Y.Z', help='Install this release instead of the latest')
+    update.add_argument('--source', type=Path, help='Install from a local ACP checkout instead of a release')
+    update.add_argument('--check', action='store_true', help='Only report the installed and available versions')
+    update.add_argument('--reinstall', action='store_true', help='Install even if the target is not newer')
+    update.add_argument('--force', action='store_true', help='Restart even though board runs would be interrupted')
     linear = sub.add_parser('linear', help='Configure Linear from an agent or terminal; JSON output, no secrets')
     linear_sub = linear.add_subparsers(dest='linear_command', required=True)
     linear_sub.add_parser('status')
@@ -214,6 +223,11 @@ def main() -> None:
                     return
                 result = result[name] if len(result) == 1 else result
             print(json.dumps(result, indent=2))
+            return
+        if args.command == 'update':
+            from .update import update
+            print(json.dumps(update(settings, args.target_version, args.source, args.check,
+                                    args.reinstall, args.force), indent=2))
             return
         if args.command == 'overlay':
             from . import overlay

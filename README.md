@@ -28,6 +28,7 @@ acp open           # Open the board in your browser
 acp status         # JSON: running, reachable, healthy, URL, PID, log path
 acp logs           # Last 100 log lines; use --lines 500 for more
 acp stop           # Stop ACP and CLI runs; stop desktop turns in Codex
+acp update         # Install the latest release; restart what was running
 ```
 
 `acp start` is idempotent. It binds to localhost port 8765 by default; an occupied
@@ -164,16 +165,37 @@ Stop the old foreground server before using the same data with `acp start`.
 
 ### Upgrade and uninstall
 
-Stop ACP, rerun the install command, then start it again. Installation refuses to
-replace the selected instance while its managed service is running. Stop any other
-instances or foreground servers using the same installed executable before upgrading.
-Configuration and task data survive reinstall. Use the release installer for updates;
-`uv tool upgrade acp` is not the update path for downloaded wheel installations.
-
-Pin a release by using its URL instead of `latest`:
+From 0.1.5 on, update in place:
 
 ```sh
-curl -fsSL https://github.com/venti-josh/agent-control-plane/releases/download/v0.1.4/install.sh | sh
+acp update --check            # Installed and latest versions; changes nothing
+acp update                    # Install the latest release
+acp update --version 0.1.5    # Install a specific release (including an older one)
+acp update --source PATH      # Install from a local checkout (development)
+```
+
+`acp update` downloads the release's wheel and constraints and verifies them
+against its `SHA256SUMS`, as the installer does. It checks everything before
+stopping anything. It then stops the service and the Comet overlay, reinstalls
+with `uv tool install --reinstall`, runs `acp setup`, and restarts only what was
+running (the service on its previous port). An installed release that is already
+current is left alone unless you pass `--reinstall`. A `--source` checkout is
+always installed, since its code can differ under the same version number.
+
+The restart would interrupt board CLI runs that are in progress, so `acp update`
+refuses while any are running; wait for them, cancel them, or pass `--force`.
+Queued runs and Codex app runs survive the restart. `acp update` restarts only
+the managed service: stop any foreground `acp serve` using the same executable
+first. Configuration and task data survive. `uv tool upgrade acp` is not the
+update path for downloaded wheel installations.
+
+Version 0.1.4 and earlier have no `update` command: stop ACP, rerun the install
+command, then start it again. Installation refuses to replace the selected
+instance while its managed service is running. Pin a release by using its URL
+instead of `latest`:
+
+```sh
+curl -fsSL https://github.com/venti-josh/agent-control-plane/releases/download/v0.1.5/install.sh | sh
 ```
 
 To uninstall, run `acp stop`, then `uv tool uninstall acp`. If the installer supplied
@@ -741,6 +763,7 @@ which live integrations were exercised.
 | `worker.py` | Run scheduling and retryable event delivery. |
 | `runners.py` | Claude/Codex CLI adapters, sessions, launch directories, logs. |
 | `codex_activity.py` | Global Codex hook installation and observed activity intervals. |
+| `update.py` | `acp update`: verified release or checkout reinstall with a safe restart. |
 | `claude_activity.py` | Global Claude Code hook installation, observed intervals, and the combined summary. |
 | `activity.py` | Legacy ACP-run activity accounting. |
 | `desktop.py` | Supported Codex app queue, dispatch lifecycle, run-scoped actions. |
