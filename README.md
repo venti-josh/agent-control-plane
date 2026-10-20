@@ -173,7 +173,7 @@ Configuration and task data survive reinstall. Use the release installer for upd
 Pin a release by using its URL instead of `latest`:
 
 ```sh
-curl -fsSL https://github.com/venti-josh/agent-control-plane/releases/download/v0.1.4/install.sh | sh
+curl -fsSL https://github.com/venti-josh/agent-control-plane/releases/download/v0.1.5/install.sh | sh
 ```
 
 To uninstall, run `acp stop`, then `uv tool uninstall acp`. If the installer supplied
