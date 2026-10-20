@@ -192,11 +192,8 @@ def merge(*sources):
     elif not observed:
         message = ' · '.join(failed) or 'No Codex or Claude hook activity observed yet'
     else:
-        name = lambda s: label.get(s['source'], s['source'])  # noqa: E731
-        running = ' · '.join(f'{name(s)} {s["running"]}' for s in trusted)
-        waiting = ' · '.join(f'{name(s)} {s["waiting_on_input"]}' for s in trusted if s['waiting_on_input'])
-        message = ' · '.join(([running + ' running'] if running else []) + ([waiting + ' waiting'] if waiting else []) +
-                             uncertain + failed + (['approval unconfirmed'] if total('approval_status_unconfirmed') else []))
+        message = ' · '.join(uncertain + failed +
+                             (['approval unconfirmed'] if total('approval_status_unconfirmed') else []))
     return dict(
         source='hooks', available=bool(trusted), running=total('running'), subagents=total('subagents'),
         waiting_on_input=total('waiting_on_input'), approval_status_unconfirmed=total('approval_status_unconfirmed'),

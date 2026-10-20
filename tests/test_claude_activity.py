@@ -236,10 +236,10 @@ def test_merge_never_lets_a_stale_or_missing_source_blank_the_other():
     data = merge(codex_stale, claude)
     assert data['available'] is True and data['running'] == 3 and data['waiting_on_input'] == 1
     assert data['averages']['30m'] == pytest.approx(1.5)
-    assert data['message'] == 'Claude 2 running · Claude 1 waiting · Codex uncertain: 15 silent'
+    assert data['message'] == 'Codex uncertain: 15 silent'
     assert data['sources']['codex'] is codex_stale and data['sources']['claude'] is claude
     data = merge(source('codex_hooks', running=1), source('claude_hooks', running=2))
-    assert data['message'] == 'Codex 1 · Claude 2 running'
+    assert data['message'] == ''
     data = merge(source('codex_hooks', observed=False, available=False), claude)
     assert data['available'] is True and data['running'] == 2 and data['message'] == 'ok'
     data = merge(codex_stale, source('claude_hooks', observed=False, available=False))
