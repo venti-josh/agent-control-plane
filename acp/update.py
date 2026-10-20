@@ -95,7 +95,9 @@ def active_cli_runs(settings: Settings) -> int:
     if not path.exists():
         return 0
     try:
-        db = sqlite3.connect(f'file:{path}?mode=ro', uri=True, timeout=5)
+        # Read only, but not mode=ro: a read-only connection cannot recreate a WAL database's
+        # -wal/-shm files, which are absent around service restarts. mode=rw never creates the file.
+        db = sqlite3.connect(f'file:{path}?mode=rw', uri=True, timeout=5)
         try:
             try:
                 return db.execute("SELECT count(*) FROM runs r WHERE r.status='running' "
@@ -120,6 +122,19 @@ def run(command: list[str], failure: str) -> str:
     return result.stdout.strip()
 
 
+def installed_version(uv: str) -> str | None:
+    """Ask the uv tool environment itself: it can differ from the code running this command
+    (a checkout's `uv run acp update`), and releases before 0.1.5 have no --version flag."""
+    try:
+        python = Path(run([uv, 'tool', 'dir'], 'uv tool dir failed')) / 'acp' / 'bin' / 'python'
+        if not python.exists():
+            return None
+        return run([str(python), '-I', '-c', 'import acp; print(acp.__version__)'],
+                   'The installed ACP does not import').split()[-1]
+    except (RuntimeError, IndexError):
+        return None
+
+
 def update(settings: Settings, version: str | None = None, source: Path | None = None,
            check: bool = False, reinstall: bool = False, force: bool = False,
            client: httpx.Client | None = None) -> dict:
@@ -132,21 +147,27 @@ def update(settings: Settings, version: str | None = None, source: Path | None =
     try:
         with tempfile.TemporaryDirectory(prefix='acp-update-') as temp:
             folder = Path(temp)
-            uv = find_uv() if source or not check else None
+            try:
+                uv = find_uv()
+            except RuntimeError:
+                if source or not check:
+                    raise
+                uv = None
+            current = (installed_version(uv) if uv else None) or __version__
             if source:
                 target, constraints = checkout(source, uv, folder)
                 package = Path(source).expanduser().resolve()
             else:
                 target = version or latest_version(client)
-            result = {'installed_version': __version__, 'target_version': target,
+            result = {'installed_version': current, 'target_version': target,
                       'source': str(package) if source else release_base(target)}
             # A checkout can differ from the installed code under the same version number.
-            newer = bool(source) or parse_version(target) > parse_version(__version__)
+            newer = bool(source) or parse_version(target) > parse_version(current)
             if check:
                 return {**result, 'update_available': newer}
-            if not (newer or reinstall or (version and target != __version__)):
+            if not (newer or reinstall or (version and target != current)):
                 return {**result, 'updated': False,
-                        'message': f'ACP {__version__} is current; use --reinstall to install {target} anyway.'}
+                        'message': f'ACP {current} is current; use --reinstall to install {target} anyway.'}
             busy = active_cli_runs(settings)
             if busy and not force:
                 raise RuntimeError(f'{busy} board run{"s" * (busy != 1)} would be interrupted by the restart. '
@@ -167,7 +188,9 @@ def update(settings: Settings, version: str | None = None, source: Path | None =
             # From here on use only the new executable; this process still runs the old code.
             executable = str(Path(run([uv, 'tool', 'dir', '--bin'], 'uv tool dir failed')) / 'acp')
             run([executable, 'setup'], 'acp setup failed after installing')
-            installed = run([executable, '--version'], 'The new acp did not start').split()[-1]
+            installed = installed_version(uv)
+            if installed is None:
+                raise RuntimeError('Installed, but the new ACP does not import; rerun the release installer')
             restarted = {'service': False, 'overlay': False}
             if service['running']:
                 run([executable, 'start'] + (['--port', str(port)] if port else []),
@@ -176,7 +199,7 @@ def update(settings: Settings, version: str | None = None, source: Path | None =
             if panel:
                 run([executable, 'overlay', 'start'], 'Updated, but acp overlay start failed; run it again')
                 restarted['overlay'] = True
-            return {**result, 'updated': True, 'previous_version': __version__,
+            return {**result, 'updated': True, 'previous_version': current,
                     'installed_version': installed, 'restarted': restarted}
     finally:
         if owned:
