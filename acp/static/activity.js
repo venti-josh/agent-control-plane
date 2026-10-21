@@ -96,10 +96,11 @@ const activityOverlay = (() => {
       if (!response.ok) throw new Error('Activity unavailable');
       const data = await response.json();
       if (data.available === false) throw new Error('Activity unavailable');
-      if (![data.running, data.subagents, data.waiting_on_input, ...['30m','1h','3h'].map(k => data.averages?.[k])]
+      if (![data.running, data.subagents, data.waiting_on_input, data.idle, ...['30m','1h','3h'].map(k => data.averages?.[k])]
         .every(n => Number.isFinite(n) && n >= 0)) throw new Error('Invalid activity');
       document.getElementById('activity-running').textContent = data.running;
-      document.getElementById('activity-waiting').textContent = data.waiting_on_input;
+      // Waiting on you: blocked on an approval or question, or finished and awaiting your next message.
+      document.getElementById('activity-waiting').textContent = data.waiting_on_input + data.idle;
       for (const period of ['30m','1h','3h']) document.getElementById(`activity-${period}`).textContent = data.averages[period].toFixed(2);
       const average = data.averages['30m'];
       const mood = average >= 3 ? 'rainbow' : average >= 2 ? 'happy' : average >= 1 ? 'sad' : 'dead';

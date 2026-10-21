@@ -202,6 +202,52 @@ def test_registry_idle_after_last_hook_ends_an_interrupted_turn(tmp_path, monkey
         assert path.is_dir() or b'PRIVATE' not in path.read_bytes()
 
 
+def test_live_idle_sessions_count_as_awaiting_a_reply(tmp_path, monkeypatch):
+    home = tmp_path / 'claude-home'
+    monitor, _ = tracker(tmp_path, monkeypatch, home)
+    # `ps` pads single-digit days; Claude Code's registry may not.
+    starts = {41: 'Thu Oct  1 22:00:44 2026', 42: 'Thu Oct  1 22:01:00 2026', 43: 'Thu Oct  1 22:02:00 2026',
+              44: 'Fri Oct  2 09:00:00 2026', 46: 'Thu Oct  1 23:00:00 2026'}
+    monkeypatch.setattr('acp.claude_activity.process_starts', lambda: starts)
+    registry(home, 41, sessionId='finished', status='idle', procStart='Thu Oct 1 22:00:44 2026')
+    registry(home, 42, sessionId='working', status='busy', procStart='Thu Oct  1 22:01:00 2026')
+    registry(home, 43, sessionId='prompt', status='waiting', procStart='Thu Oct  1 22:02:00 2026')
+    registry(home, 44, sessionId='reused', status='idle', procStart='Mon Sep 28 08:00:00 2026')  # pid now another process
+    registry(home, 45, sessionId='closed', status='idle', procStart='Thu Oct  1 22:03:00 2026')  # process gone
+    registry(home, 46, sessionId='chat', status='idle', procStart='Thu Oct  1 23:00:00 2026')
+    registry(home, 47, sessionId='old-claude', status='idle')  # no recorded start proves nothing
+    (home / 'sessions' / '48.json').write_text('{not json')
+    (home / 'sessions' / '49.json').write_text('[]')
+    monitor.record(event('UserPromptSubmit'), 'alive')
+    summary = monitor.summary()
+    # A hook newer than the registry's idle status means work started again: count it once, as running.
+    assert summary['idle'] == 1 and summary['running'] == 1 and summary['waiting_on_input'] == 0
+    monitor.record(event('Stop'), 'alive')
+    assert monitor.summary()['idle'] == 2
+    for path in tmp_path.iterdir():
+        assert path.is_dir() or b'PRIVATE' not in path.read_bytes()
+
+
+def test_process_starts_are_utc_like_the_registry():
+    import calendar
+    import time
+    from acp.claude_activity import process_starts
+    child = subprocess.Popen(['sleep', '5'])
+    try:
+        started = process_starts()[child.pid]
+    finally:
+        child.kill()
+        child.wait()
+    assert abs(calendar.timegm(time.strptime(started, '%a %b %d %H:%M:%S %Y')) - time.time()) < 5
+
+
+def test_codex_has_no_registry_so_counts_no_idle_chats(tmp_path):
+    from acp.codex_activity import CodexActivity
+    monitor = CodexActivity(tmp_path / 'codex.sqlite3')
+    monitor.record(dict(hook_event_name='UserPromptSubmit', session_id='codex-chat', turn_id='t'), '')
+    assert monitor.summary()['idle'] == 0
+
+
 def test_unknown_events_malformed_ids_and_internal_agents_produce_no_counts(tmp_path, monkeypatch):
     monitor, _ = tracker(tmp_path, monkeypatch)
     for payload in [[], {}, event('Unrecognized'), event('UserPromptSubmit', session=''),
@@ -227,14 +273,15 @@ def test_owner_is_the_claude_process_not_the_desktop_app(monkeypatch):
 def test_merge_never_lets_a_stale_or_missing_source_blank_the_other():
     from acp.claude_activity import merge, unavailable
 
-    def source(name, observed=True, available=True, running=0, waiting=0, unknown=0, average=0.0, message='ok'):
-        return dict(source=name, available=available, running=running, subagents=0, waiting_on_input=waiting,
+    def source(name, observed=True, available=True, running=0, waiting=0, idle=0, unknown=0, average=0.0, message='ok'):
+        return dict(source=name, available=available, running=running, subagents=0, waiting_on_input=waiting, idle=idle,
                     approval_status_unconfirmed=0, unknown=unknown, averages={'30m': average, '1h': average, '3h': average},
                     message=message, observed_since=1.0 if observed else None, last_event_at=2.0 if observed else None)
     codex_stale = source('codex_hooks', available=False, running=1, unknown=15, average=.5)
-    claude = source('claude_hooks', running=2, waiting=1, average=1.0)
+    claude = source('claude_hooks', running=2, waiting=1, idle=4, average=1.0)
     data = merge(codex_stale, claude)
-    assert data['available'] is True and data['running'] == 3 and data['waiting_on_input'] == 1
+    assert data['available'] is True and data['running'] == 3 and data['waiting_on_input'] == 1 and data['idle'] == 4
+    assert merge(unavailable('codex_hooks', 'Codex'), claude)['idle'] == 4
     assert data['averages']['30m'] == pytest.approx(1.5)
     assert data['message'] == 'Codex uncertain: 15 silent'
     assert data['sources']['codex'] is codex_stale and data['sources']['claude'] is claude

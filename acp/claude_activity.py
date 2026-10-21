@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import shlex
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -77,6 +78,44 @@ def registry_idle_since(home, owner, session):
         return None
 
 
+def process_starts():
+    """Every process's start time as the registry records it: `ps` lstart in UTC."""
+    try:
+        result = subprocess.run(['ps', '-A', '-o', 'pid=', '-o', 'lstart='], capture_output=True, text=True,
+                                timeout=2, env={**os.environ, 'TZ': 'UTC'})
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    starts = {}
+    for line in result.stdout.splitlines():
+        pid, _, started = line.strip().partition(' ')
+        if pid.isdigit():
+            starts[int(pid)] = started.strip()
+    return starts
+
+
+def registry_idle_sessions(home):
+    """Sessions Claude Code's own registry marks idle: finished, awaiting the user's next message.
+
+    These are the sessions Claude's agent monitor lists as idle. A file counts only while its
+    process runs with the recorded start time, so a crash's leftover file or a reused pid
+    proves nothing. Only pid, sessionId, status and procStart are used.
+    """
+    idle = {}
+    for path in (Path(home) / 'sessions').glob('*.json'):
+        try:
+            data = json.loads(path.read_bytes()[:65536])
+            pid, session, started = data.get('pid'), data.get('sessionId'), data.get('procStart')
+        except (OSError, ValueError, AttributeError):
+            continue
+        if data.get('status') == 'idle' and isinstance(pid, int) and identifier(session) and isinstance(started, str):
+            idle[pid] = (session, ' '.join(started.split()))
+    if not idle:
+        return set()
+    starts = process_starts()
+    # `ps` pads single-digit days with a second space; compare words, not spacing.
+    return {session for pid, (session, started) in idle.items() if ' '.join(starts.get(pid, '').split()) == started}
+
+
 class ClaudeActivity(CodexActivity):
     SOURCE, LABEL = 'claude_hooks', 'Claude'
     NOT_OBSERVED = 'Claude hooks not installed or no new session yet'
@@ -88,17 +127,24 @@ class ClaudeActivity(CodexActivity):
     def alive(self, owner):
         return owner_alive(owner)
 
-    def idle_since(self, row):
-        if row['kind'] != 'chat':
-            return None
+    def config_dir(self):
         if self.home is None:
             manifest = hook_manifest(self.path)
             try:
                 self.home = Path(json.loads(manifest.read_text())['home'])
             except (OSError, ValueError, KeyError, TypeError):
                 self.home = config_home()
-        idle = registry_idle_since(self.home, row['owner'], row['id'])
+        return self.home
+
+    def idle_since(self, row):
+        if row['kind'] != 'chat':
+            return None
+        idle = registry_idle_since(self.config_dir(), row['owner'], row['id'])
         return idle if idle is not None and idle >= row['last_seen'] else None
+
+    def awaiting_reply(self, active):
+        # A hook newer than the registry's idle status means work started again; count it once.
+        return len(registry_idle_sessions(self.config_dir()) - active)
 
     def record(self, event, owner):
         if not isinstance(event, dict):
@@ -197,7 +243,8 @@ def merge(*sources):
                              (['approval unconfirmed'] if total('approval_status_unconfirmed') else []))
     return dict(
         source='hooks', available=bool(trusted), running=total('running'), subagents=total('subagents'),
-        waiting_on_input=total('waiting_on_input'), approval_status_unconfirmed=total('approval_status_unconfirmed'),
+        waiting_on_input=total('waiting_on_input'), idle=total('idle'),
+        approval_status_unconfirmed=total('approval_status_unconfirmed'),
         unknown=total('unknown'), averages={k: sum(s['averages'][k] for s in observed) for k in ('30m', '1h', '3h')},
         message=message, observed_since=min((s['observed_since'] for s in observed), default=None),
         last_event_at=max((s['last_event_at'] for s in observed if s.get('last_event_at') is not None), default=None),
@@ -205,7 +252,7 @@ def merge(*sources):
 
 
 def unavailable(source, label):
-    return dict(source=source, available=False, running=0, subagents=0, waiting_on_input=0,
+    return dict(source=source, available=False, running=0, subagents=0, waiting_on_input=0, idle=0,
                 approval_status_unconfirmed=0, unknown=0, averages={'30m': 0.0, '1h': 0.0, '3h': 0.0},
                 message=f'{label} activity unavailable', observed_since=None, last_event_at=None, error=True)
 

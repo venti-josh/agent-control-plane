@@ -55,3 +55,9 @@ def reviewed(service, pr=False):
 @pytest.fixture(autouse=True)
 def isolate_client_command_journal(tmp_path, monkeypatch):
     monkeypatch.setenv('ACP_COMMAND_JOURNAL', str(tmp_path / 'client-commands.sqlite3'))
+
+
+@pytest.fixture(autouse=True)
+def isolate_claude_config(tmp_path, monkeypatch):
+    # Activity summaries read Claude Code's session registry; never count this machine's sessions.
+    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(tmp_path / 'claude-config'))

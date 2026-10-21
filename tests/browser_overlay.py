@@ -170,9 +170,10 @@ def main():
                 page.clock.fast_forward(5500)
                 page.wait_for_timeout(50)
                 assert len(held) == 1, 'Polling must not invalidate an in-flight request'
-                held[0].fulfill(json={'running': 7, 'subagents': 4, 'waiting_on_input': 1,
+                held[0].fulfill(json={'running': 7, 'subagents': 4, 'waiting_on_input': 1, 'idle': 2,
                                      'averages': {'30m': 3, '1h': 2, '3h': 1}})
                 expect(page.locator('#activity-running')).to_have_text('7')
+                expect(page.locator('#activity-waiting')).to_have_text('3')
                 page.unroute('**/api/activity')
                 page.evaluate('activityOverlay.refresh()')
                 expect(page.locator('#activity-running')).to_have_text('3')

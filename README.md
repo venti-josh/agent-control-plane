@@ -153,9 +153,17 @@ counters and the pet. A source that was never observed,
 is silent, or fails to read never blanks the other: counters go unavailable only when
 no source is trustworthy.
 
-Running counts include observed root chats and subagents; waiting counts reflect
-explicit input/approval hooks. Idle, finished, failed, and queued board tasks are
-excluded. Async questions do not pause an agent. Hooks do not provide an approval
+Running counts include observed root chats and subagents, so it reads higher than
+Claude's agent monitor, which counts sessions: a session with two subagents working is
+one working session there and three running agents here. Comet's Waiting adds two
+counts that `/api/activity` reports separately: `waiting_on_input`, agents blocked on
+explicit input/approval hooks, and `idle`, Claude Code sessions that finished and await
+your next message. `idle` comes from Claude Code's session registry (`sessions/<pid>.json`;
+only `pid`, `sessionId`, `status` and `procStart` are read): a session counts while the
+registry marks it idle and its process still runs with the recorded start time, the same
+sessions the agent monitor lists as idle. A session the hooks still see working is
+counted once, as running. Codex keeps no such registry, so idle Codex chats are not
+counted. Failed and queued board tasks are excluded. Async questions do not pause an agent. Hooks do not provide an approval
 resolution event: a wait can remain observed until the tool returns, even after
 approval. Hosted tools may not emit every lifecycle hook. Activity silent for five
 minutes becomes **unavailable**, rather than presenting potentially stale counts;
