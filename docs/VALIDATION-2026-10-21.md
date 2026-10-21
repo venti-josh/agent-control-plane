@@ -85,8 +85,9 @@ non-interactive way; `acp activity status` says "Codex hooks need trust or a new
 
 After the Claude and Codex sessions above: `claude` source available with events
 (`claude-activity.sqlite3`: 7 agents, 14 intervals); `codex` source still unavailable, `codex-activity.sqlite3`
-has 0 agents / 0 turns because the handlers are installed but untrusted. **Expected-pending** on the owner's
-`/hooks` trust, not a defect.
+had 0 agents / 0 turns because the handlers were installed but untrusted. The owner then trusted them in the
+Codex CLI `/hooks`; one more Codex task (`808e09b6`, moved to Done) made `acp activity status` report
+`codex: available, "Codex · observed activity"` with 1 agent / 1 turn in the database. Both sources report. PASS
 
 ## Update path
 
