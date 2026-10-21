@@ -154,11 +154,13 @@ def main():
                 page.route('**/api/activity', lambda route: route.abort())
                 page.evaluate('activityOverlay.refresh()')
                 expect(page.locator('#activity-status')).to_have_text('Activity unavailable')
+                expect(page.locator('#activity-status')).to_be_visible()
                 expect(page.locator('#activity-running')).to_have_text('—')
                 expect(tile).to_have_attribute('data-mood', 'unavailable')
                 page.unroute('**/api/activity')
                 page.evaluate('activityOverlay.refresh()')
                 expect(page.locator('#activity-running')).to_have_text('3')
+                expect(page.locator('#activity-status')).to_be_hidden()
                 # A response slower than the polling interval must still reach the tile.
                 held = []
                 page.route('**/api/activity', lambda route: held.append(route))
@@ -174,6 +176,7 @@ def main():
                 page.unroute('**/api/activity')
                 page.evaluate('activityOverlay.refresh()')
                 expect(page.locator('#activity-running')).to_have_text('3')
+                expect(page.locator('#activity-status')).to_be_hidden()
                 held.clear()
                 page.route('**/api/activity', lambda route: held.append(route))
                 with page.expect_request('**/api/activity'):
@@ -181,6 +184,7 @@ def main():
                 page.wait_for_timeout(50)
                 page.clock.fast_forward(8100)
                 expect(page.locator('#activity-status')).to_have_text('Activity unavailable')
+                expect(page.locator('#activity-status')).to_be_visible()
                 expect(page.locator('#activity-running')).to_have_text('—')
                 expect(tile).to_have_attribute('data-mood', 'unavailable')
                 for route in held:
@@ -188,6 +192,7 @@ def main():
                 page.unroute('**/api/activity')
                 page.evaluate('activityOverlay.refresh()')
                 expect(page.locator('#activity-running')).to_have_text('3')
+                expect(page.locator('#activity-status')).to_be_hidden()
                 assert not errors, errors
                 browser.close()
                 print('Overlay browser checks passed: real metrics/moods, drag, keyboard, collapse/hide, '
