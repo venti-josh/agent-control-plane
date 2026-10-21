@@ -410,7 +410,8 @@ class Integrations:
                 if blocker and comment["created_at"] < blocker["created_at"]:
                     return  # A delayed earlier note is context, not an answer to this question.
                 db.execute("UPDATE comments SET in_reply_to=? WHERE id=?", (task["blocker_comment_id"], comment["id"]))
-                self.service._schedule(db, task["id"], "input", {"comment_id": comment["id"]})
+                if not self.service._answer_approval(db, task, comment):
+                    self.service._schedule(db, task["id"], "input", {"comment_id": comment["id"]})
             elif command == "/wait" and message.strip():
                 try:
                     self.service._move(db, task, "waiting_on_input", "linear", blocker_comment_id=comment["id"])

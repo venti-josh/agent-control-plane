@@ -3,9 +3,13 @@ import asyncio
 import json
 import sys
 
+import httpx
 import pytest
 
-from acp.codex_app_server import CodexRunner, approval_question, probe
+from acp.codex_app_server import CodexRunner, Connection, approval_question, probe
+from acp.integrations import Integrations
+from conftest import started
+from test_integrations import comment_payload, imported
 from acp.worker import Worker
 from test_runners import git_repo, live_api  # noqa: F401 (fixtures)
 
@@ -29,6 +33,7 @@ if 'exec' in args:  # The fallback: `codex exec --json`, reporting through the H
                                  {'Content-Type': 'application/json'})
     urllib.request.urlopen(req, timeout=10).read()
     sys.exit(0)
+sys.stderr.write('fake app-server diagnostics\n'); sys.stderr.flush()
 out = threading.Lock()
 replies, answers, steers = {}, {}, []
 interrupted = threading.Event()
@@ -208,7 +213,7 @@ async def test_launch_complete_then_resume_same_thread_for_answer_and_changes(sv
     assert len(fake_codex('thread/resume')) == 2 and len(fake_codex('thread/start')) == 1
     assert svc.get_task(task['id'])['state'] == 'ready_for_review'
     log = (settings.data_dir / 'logs' / f"{current['runs'][0]['id']}.jsonl").read_text()
-    assert 'turn/completed' in log and '"channel": "stdin"' in log
+    assert 'turn/completed' in log and '"channel": "stdin"' in log and 'fake app-server diagnostics' in log
 
 
 async def test_comment_on_in_progress_task_steers_the_live_turn(svc, fake_codex):
@@ -361,3 +366,69 @@ async def test_thread_joins_the_codex_app_project_containing_the_repo(svc, fake_
     [start] = fake_codex('thread/start')
     assert start['params']['projectId'] == 'project-1'
     assert fake_codex('initialize')[-1]['params']['capabilities'] == {'experimentalApi': True}
+
+
+def parked(service, **kwargs):
+    """A live app-server run waiting on a command approval, as the runner leaves it."""
+    task, run = started(service, provider='codex', **kwargs)
+    service.mark_steerable(run['id'])
+    approval = service.request_approval(run['id'], {'id': 0, 'method': 'item/commandExecution/requestApproval',
+                                                    'params': {}}, 'Codex asks to run a command')
+    return service.get_task(task['id']), run, approval
+
+
+def test_answer_resumes_the_same_run_and_its_activity(service):
+    task, run, approval = parked(service)
+    assert task['state'] == 'waiting_on_input'
+    assert service.store.one('SELECT activity_finished_at FROM runs WHERE id=?', (run['id'],))['activity_finished_at']
+    service.add_comment(task['id'], 'accept', in_reply_to=task['blocker_comment_id'], resume=True)
+    assert service.get_task(task['id'])['state'] == 'in_progress' and service.claim_next() is None
+    assert service.store.one('SELECT activity_finished_at FROM runs WHERE id=?', (run['id'],))['activity_finished_at'] is None
+    assert [a['decision'] for a in service.answered_approvals(run['id'])] == ['accept']
+
+
+async def test_linear_reply_answers_the_approval(linear_service):
+    task = await imported(linear_service)
+    linear_service.update_task(task['id'], provider='codex')
+    linear_service.move_task(task['id'], 'todo')
+    run = linear_service.claim_next()
+    linear_service.mark_started(run['id'])
+    linear_service.request_approval(run['id'], {'id': 0, 'method': 'item/commandExecution/requestApproval',
+                                                'params': {}}, 'Codex asks to run a command')
+    async with httpx.AsyncClient() as client:
+        await Integrations(linear_service, client).handle_linear(comment_payload('Accept'))
+    assert [a['decision'] for a in linear_service.answered_approvals(run['id'])] == ['accept']
+    assert linear_service.get_task(task['id'])['state'] == 'in_progress'
+    assert linear_service.claim_next() is None
+
+
+def test_approval_answered_by_another_client_resumes_the_task(service):
+    task, run, approval = parked(service)
+    service.approval_resolved_elsewhere(approval)
+    current = service.get_task(task['id'])
+    assert current['state'] == 'in_progress' and current['approval'] is None
+    assert current['comments'][-1]['body'] == 'Answered outside ACP.'
+    service.submit_for_review(task['id'], 'Done', run_id=run['id'])
+
+
+def test_steering_that_cannot_be_delivered_becomes_a_followup(service):
+    task, run = started(service, provider='codex')
+    service.mark_steerable(run['id'])
+    comment = service.add_comment(task['id'], 'Late requirement')
+    service.defer_input(comment['id'])
+    service.submit_for_review(task['id'], 'Done', run_id=run['id'])  # No longer blocked.
+    service.finish_run(run['id'])
+    assert service.claim_next()['inputs'] == [{'trigger': 'comment', 'comment_id': comment['id']}]
+
+
+async def test_unanswered_request_times_out_with_a_message(tmp_path):
+    class Silent:
+        process = None
+        async def send(self, text): pass
+        async def recv(self): await asyncio.sleep(10)
+        async def close(self): pass
+    with (tmp_path / 'log.jsonl').open('w') as log:
+        rpc = Connection(Silent(), log)
+        with pytest.raises(TimeoutError, match='did not answer thread/start'):
+            await rpc.request('thread/start', timeout=0.05)
+        await rpc.close()

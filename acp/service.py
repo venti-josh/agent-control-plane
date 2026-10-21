@@ -533,8 +533,28 @@ class TaskService:
                        (comment['id'], approval['run_id']))
         self._event(db, 'approval.answered', task['id'], {'run_id': approval['run_id'],
                     'approval_id': approval['id'], 'decision': decision or 'decline'})
-        self._move(db, task, 'in_progress', 'system', internal=True)
+        self._resume_run(db, task, approval['run_id'])
         return True
+
+    def _resume_run(self, db, task: dict, run_id: str) -> None:
+        # The run never stopped; leaving Waiting on Input must not end its activity interval.
+        self._move(db, task, 'in_progress', 'system', internal=True)
+        db.execute('UPDATE runs SET activity_finished_at=NULL WHERE id=?', (run_id,))
+
+    def approval_resolved_elsewhere(self, approval_id: str) -> None:
+        """Another client of a shared app-server answered the request (e.g. the Codex app)."""
+        with self.store.transaction() as db:
+            approval = row(db.execute("SELECT * FROM approvals WHERE id=? AND status IN ('pending','answered')",
+                                      (approval_id,)).fetchone())
+            if not approval:
+                return
+            db.execute("UPDATE approvals SET status='resolved' WHERE id=?", (approval_id,))
+            run = row(db.execute("SELECT * FROM runs WHERE id=?", (approval['run_id'],)).fetchone())
+            task = self._task(db, run['task_id'])
+            if task['state'] == 'waiting_on_input' and task['blocker_comment_id'] == approval['comment_id']:
+                self._comment(db, task['id'], 'Answered outside ACP.', 'system', 'system',
+                              in_reply_to=approval['comment_id'])
+                self._resume_run(db, task, run['id'])
 
     def request_approval(self, run_id: str, request: dict, question: str) -> str:
         """Park a live run on a Codex approval request: the task waits on a blocker comment."""
@@ -566,6 +586,17 @@ class TaskService:
     def input_delivered(self, comment_id: str) -> None:
         with self.store.transaction() as db:
             db.execute("UPDATE run_inputs SET status='delivered' WHERE comment_id=?", (comment_id,))
+
+    def defer_input(self, comment_id: str) -> None:
+        """Steering failed: queue the comment as a follow-up so the agent can still report."""
+        with self.store.transaction() as db:
+            pending = row(db.execute("SELECT i.run_id,c.task_id FROM run_inputs i JOIN comments c ON c.id=i.comment_id "
+                                     "WHERE i.comment_id=? AND i.status='pending'", (comment_id,)).fetchone())
+            if not pending:
+                return
+            db.execute("DELETE FROM run_inputs WHERE comment_id=?", (comment_id,))
+            if self._task(db, pending['task_id'])['state'] in {'todo', 'in_progress', 'waiting_on_input', 'ready_for_review'}:
+                self._schedule(db, pending['task_id'], 'comment', {'comment_id': comment_id})
 
     def mark_steerable(self, run_id: str) -> None:
         with self.store.transaction() as db:

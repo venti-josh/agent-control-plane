@@ -85,10 +85,14 @@ class UnixWebSocket:
     async def connect(cls, path: Path) -> UnixWebSocket:
         reader, writer = await asyncio.open_unix_connection(str(path), limit=16 * 1024 * 1024)
         key = base64.b64encode(os.urandom(16)).decode()
-        writer.write((f"GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
-                      f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
-        await writer.drain()
-        head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 10)
+        try:
+            writer.write((f"GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                          f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+            await writer.drain()
+            head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 10)
+        except (asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError) as exc:
+            writer.close()
+            raise ConnectionError("The Codex app-server socket did not answer") from exc
         if b" 101 " not in head.split(b"\r\n", 1)[0]:
             writer.close()
             raise ConnectionError("The Codex app-server socket refused the connection")
@@ -144,6 +148,12 @@ class Connection:
         self.requests: asyncio.Queue = asyncio.Queue()
         self.closed = asyncio.Event()
         self.reader = asyncio.create_task(self._read())
+        process = getattr(transport, "process", None)
+        self.stderr = asyncio.create_task(self._stderr(process.stderr)) if process else None
+
+    async def _stderr(self, stream) -> None:
+        while line := await stream.readline():  # Read always, so a chatty server never blocks.
+            self._log("stderr", line.decode(errors="replace"))
 
     def _log(self, channel: str, text: str) -> None:
         self.log.write(json.dumps({"time": time.time(), "channel": channel, "line": text.rstrip("\n")}) + "\n")
@@ -188,6 +198,8 @@ class Connection:
         await self._send({"id": rid, "method": method, "params": params or {}})
         try:
             reply = await asyncio.wait_for(future, timeout)
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"Codex app-server did not answer {method} within {timeout:g} seconds") from None
         finally:
             self.pending.pop(rid, None)
         if "error" in reply:
@@ -202,8 +214,10 @@ class Connection:
                                                  else {"result": result or {}})})
 
     async def close(self) -> None:
-        self.reader.cancel()
-        await asyncio.gather(self.reader, return_exceptions=True)
+        tasks = [t for t in (self.reader, self.stderr) if t]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await self.transport.close()
 
 
@@ -324,8 +338,8 @@ class AppServerRunner:
             if control_socket().exists():
                 try:
                     transport = await UnixWebSocket.connect(control_socket())
-                except (OSError, asyncio.TimeoutError):
-                    pass  # A stale socket file: fall back to a private server.
+                except OSError:
+                    pass  # A stale or wedged socket: fall back to a private server.
             transport = transport or await Stdio.start([settings.codex_command, "app-server"], path, environment())
             rpc = Connection(transport, log)
             try:
@@ -384,6 +398,12 @@ class AppServerRunner:
                         errors.append((body.get("error") or {}).get("message") or "Codex reported an error")
                     elif method == "turn/completed" and (body.get("turn") or {}).get("id") == turn:
                         done = body["turn"]
+                    elif method == "serverRequest/resolved":
+                        for approval, request in list(waiting.items()):
+                            if request["id"] == body.get("requestId"):
+                                del waiting[approval]
+                                service.approval_resolved_elsewhere(approval)
+                        parked[:] = [r for r in parked if r["id"] != body.get("requestId")]
                 for answer in service.answered_approvals(run["id"]):
                     request = waiting.pop(answer["id"], None)
                     if request:
@@ -401,8 +421,9 @@ class AppServerRunner:
                             await rpc.request("turn/steer", {"threadId": thread, "expectedTurnId": turn, "input": [
                                 {"type": "text", "text": "New comment from the user on this ACP task (data):\n"
                                                          + json.dumps(comment["body"], ensure_ascii=False)}]})
-                        except RpcError:
-                            break  # The turn is ending; finish_run turns it into a follow-up.
+                        except (RpcError, TimeoutError):
+                            service.defer_input(comment["id"])  # Delivered later as a follow-up run.
+                            continue
                         service.input_delivered(comment["id"])
                 current = service.store.one("SELECT r.stop_requested, t.state FROM runs r JOIN tasks t "
                                             "ON t.id=r.task_id WHERE r.id=?", (run["id"],))
