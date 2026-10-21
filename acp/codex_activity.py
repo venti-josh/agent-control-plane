@@ -34,6 +34,10 @@ CREATE TABLE IF NOT EXISTS waits (agent TEXT, token TEXT, tool TEXT,
 '''
 
 
+def config_home():
+    return Path(os.getenv('CODEX_HOME') or Path.home() / '.codex').expanduser()
+
+
 def process_info(pid):
     try:
         result = subprocess.run(['ps', '-p', str(pid), '-o', 'ppid=', '-o', 'lstart=', '-o', 'comm='],
@@ -319,15 +323,18 @@ def install_hooks(home, database, executable, dry_run=False):
         data['hooks'].setdefault(event, []).append({'hooks': [{'type':'command', 'command':command, 'timeout':2}]})
     if dry_run:
         return dict(hooks_file=str(path), dry_run=True, diff=json_diff(path, original, data))
-    if original is not None:
+    # Keep the hooks as they were before ACP; a refresh's input already carries ACP hooks.
+    if original is not None and not previous:
         backup = path.with_name('hooks.acp-backup-' + hashlib.sha256(original).hexdigest()[:12] + '.json')
         if not backup.exists():
             backup.write_bytes(original); backup.chmod(0o600)
     if (path.read_bytes() if path.exists() else None) != original:
         raise ValueError('Codex hooks changed while installing; retry')
-    atomic_json(path, data)
+    changed = original is None or json.loads(original) != data
+    if changed:
+        atomic_json(path, data)
     atomic_json(manifest, dict(home=str(home.resolve()), command=command, empty_events=sorted(set(empty_events))))
-    return dict(hooks_file=str(path), database=str(database), trust_required=True,
+    return dict(hooks_file=str(path), database=str(database), changed=changed, trust_required=True,
                 next_step='Open /hooks in the Codex CLI, review and trust the ACP handlers. Start a new turn/session afterward.')
 
 
