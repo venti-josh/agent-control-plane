@@ -15,9 +15,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture
 def cli(tmp_path):
-    env = {k: v for k, v in os.environ.items()
-           if not k.startswith('ACP_') and k not in {'DEFAULT_PROVIDER', 'DEFAULT_REPO'}}
-    env.update(ACP_HOME=str(tmp_path / 'home'), PYTHONPATH=str(ROOT), POLL_SECONDS='0.02')
+    env = {k: v for k, v in os.environ.items() if not k.startswith('ACP_') and k not in
+           {'DEFAULT_PROVIDER', 'DEFAULT_REPO', 'CLAUDE_COMMAND', 'CODEX_COMMAND'}}
+    # Setup installs agent hooks: keep every home under tmp_path, never the developer's own.
+    env.update(ACP_HOME=str(tmp_path / 'home'), PYTHONPATH=str(ROOT), POLL_SECONDS='0.02',
+               HOME=str(tmp_path / 'user'), CLAUDE_CONFIG_DIR=str(tmp_path / 'user/.claude'),
+               CODEX_HOME=str(tmp_path / 'user/.codex'))
 
     def run(*args, check=True):
         result = subprocess.run([sys.executable, '-m', 'acp.cli', *args], env=env,
@@ -38,6 +41,141 @@ def wait_task(cli, task_id, state):
             return task
         time.sleep(.05)
     pytest.fail(f'Task did not reach {state}: {task}')
+
+
+def fake_agents(tmp_path, *names):
+    """A PATH holding only the named fake CLIs (plus system tools), so detection is deterministic."""
+    bin_dir = tmp_path / 'fake-bin'
+    bin_dir.mkdir(exist_ok=True)
+    for stale in bin_dir.iterdir():
+        stale.unlink()
+    for name in names:
+        (bin_dir / name).write_text('#!/bin/sh\nexit 0\n')
+        (bin_dir / name).chmod(0o755)
+    return f'{bin_dir}:/usr/bin:/bin'
+
+
+def test_setup_detects_agents_and_installs_their_hooks_once(cli, tmp_path):
+    cli.env['PATH'] = fake_agents(tmp_path, 'claude', 'codex')
+    result = json.loads(cli('setup').stdout)
+    claude, codex = str(tmp_path / 'fake-bin/claude'), str(tmp_path / 'fake-bin/codex')
+    config = (cli.home / 'config.env').read_text()
+    assert 'DEFAULT_PROVIDER=claude\n' in config
+    assert f'CLAUDE_COMMAND={claude}\n' in config and f'CODEX_COMMAND={codex}\n' in config
+    assert result['created'] is True
+    assert result['agents'] == {'claude': {'command': claude, 'found': True},
+                                'codex': {'command': codex, 'found': True}}
+    settings_file, hooks_file = tmp_path / 'user/.claude/settings.json', tmp_path / 'user/.codex/hooks.json'
+    assert result['hooks']['claude']['status'] == 'installed' and result['hooks']['codex']['status'] == 'installed'
+    assert result['hooks']['claude']['file'] == str(settings_file) and result['hooks']['codex']['file'] == str(hooks_file)
+    assert result['hooks']['codex']['trust_required'] is True and '/hooks' in result['hooks']['codex']['next_step']
+    assert 'trust_required' not in result['hooks']['claude'] and 'new Claude Code session' in result['hooks']['claude']['next_step']
+    # The same hook entries `acp activity install` writes, bound to the interpreter that ran setup.
+    for path, module in [(settings_file, 'acp.claude_activity'), (hooks_file, 'acp.codex_activity')]:
+        command = json.loads(path.read_text())['hooks']['UserPromptSubmit'][0]['hooks'][0]['command']
+        assert command.startswith(sys.executable) and module in command
+    manifests = [cli.home / 'data' / f'{name}-activity.hooks.json' for name in ('claude', 'codex')]
+    before = [path.read_bytes() for path in (settings_file, hooks_file, *manifests)]
+    again = json.loads(cli('setup').stdout)
+    assert again['created'] is False and (cli.home / 'config.env').read_text() == config
+    assert again['hooks'] == {'codex': {'status': 'already installed', 'home': str(hooks_file.parent), 'file': str(hooks_file)},
+                              'claude': {'status': 'already installed', 'home': str(settings_file.parent), 'file': str(settings_file)}}
+    assert [path.read_bytes() for path in (settings_file, hooks_file, *manifests)] == before
+    assert not list((tmp_path / 'user/.claude').glob('settings.acp-backup-*'))  # nothing to back up: ACP wrote the file
+
+
+def test_setup_without_agents_skips_hooks_and_later_agents_get_them(cli, tmp_path):
+    cli.env['PATH'] = fake_agents(tmp_path)
+    result = json.loads(cli('setup').stdout)
+    config = cli.home / 'config.env'
+    assert 'DEFAULT_PROVIDER=claude\n' in config.read_text()
+    assert 'CLAUDE_COMMAND=claude\n' in config.read_text() and 'CODEX_COMMAND=codex\n' in config.read_text()
+    assert result['agents'] == {'claude': {'command': 'claude', 'found': False},
+                                'codex': {'command': 'codex', 'found': False}}
+    assert result['hooks'] == {'codex': {'status': 'skipped: not found'}, 'claude': {'status': 'skipped: not found'}}
+    assert not (tmp_path / 'user').exists() and not list((cli.home / 'data').glob('*.hooks.json'))
+    # Codex alone becomes the default provider; a relative PATH entry still yields an absolute path.
+    config.unlink()
+    fake_agents(tmp_path, 'codex')
+    cli.env['PATH'] = 'fake-bin:/usr/bin:/bin'
+    result = json.loads(cli('setup').stdout)
+    assert 'DEFAULT_PROVIDER=codex\n' in config.read_text() and 'CLAUDE_COMMAND=claude\n' in config.read_text()
+    assert f'CODEX_COMMAND={tmp_path}/fake-bin/codex\n' in config.read_text()
+    assert result['hooks']['codex']['status'] == 'installed' and result['hooks']['claude'] == {'status': 'skipped: not found'}
+    # An agent installed later gets hooks on the next setup (an update); the configuration is never modified.
+    before = config.read_bytes()
+    cli.env['PATH'] = fake_agents(tmp_path, 'claude', 'codex')
+    result = json.loads(cli('setup').stdout)
+    assert config.read_bytes() == before
+    assert result['agents']['claude'] == {'command': str(tmp_path / 'fake-bin/claude'), 'found': True}
+    assert result['hooks']['claude']['status'] == 'installed' and result['hooks']['codex']['status'] == 'already installed'
+    # A configured command outside PATH counts as found; a dangling one does not.
+    cli.env['PATH'] = fake_agents(tmp_path)
+    elsewhere = tmp_path / 'elsewhere/codex'
+    elsewhere.parent.mkdir()
+    elsewhere.write_text('#!/bin/sh\nexit 0\n')
+    elsewhere.chmod(0o755)
+    cli.env['CODEX_COMMAND'] = str(elsewhere)
+    cli.env['CLAUDE_COMMAND'] = str(tmp_path / 'missing/claude')
+    result = json.loads(cli('setup').stdout)
+    assert result['agents'] == {'claude': {'command': str(tmp_path / 'missing/claude'), 'found': False},
+                                'codex': {'command': str(elsewhere), 'found': True}}
+
+
+def test_setup_hook_failure_and_opt_out_never_fail_setup(cli, tmp_path):
+    cli.env['PATH'] = fake_agents(tmp_path, 'claude', 'codex')
+    settings_file = tmp_path / 'user/.claude/settings.json'
+    settings_file.parent.mkdir(parents=True)
+    settings_file.write_text('{not json')
+    result = json.loads(cli('setup').stdout)
+    assert result['hooks']['claude']['status'].startswith('failed: ') and settings_file.read_text() == '{not json'
+    assert result['hooks']['codex']['status'] == 'installed'
+    assert not (cli.home / 'data/claude-activity.hooks.json').exists()
+    (cli.home / 'data/codex-activity.hooks.json').write_text('null')
+    result = json.loads(cli('setup').stdout)
+    assert result['hooks']['codex']['status'].startswith('failed: unreadable manifest ')
+    settings_file.write_text('{}')
+    skipped = {'codex': {'status': 'skipped: ACP_ACTIVITY_HOOKS=0'}, 'claude': {'status': 'skipped: ACP_ACTIVITY_HOOKS=0'}}
+    cli.env['ACP_ACTIVITY_HOOKS'] = '0'
+    assert json.loads(cli('setup').stdout)['hooks'] == skipped
+    del cli.env['ACP_ACTIVITY_HOOKS']
+    config = cli.home / 'config.env'
+    config.write_text(config.read_text() + 'ACP_ACTIVITY_HOOKS=0\n')
+    assert json.loads(cli('setup').stdout)['hooks'] == skipped
+    assert settings_file.read_text() == '{}'
+
+
+@pytest.mark.parametrize('name, event, option, file', [
+    ('codex', 'Interrupt', '--codex-home', 'hooks.json'),
+    ('claude', 'StopFailure', '--claude-config-dir', 'settings.json')])
+def test_setup_refreshes_installed_hooks_at_their_recorded_home(cli, tmp_path, name, event, option, file):
+    cli.env['PATH'] = fake_agents(tmp_path)
+    cli('setup')
+    custom = tmp_path / 'custom-home'
+    cli('activity', 'install', '--target', name, option, str(custom))
+    hooks_file = custom / file
+    data = json.loads(hooks_file.read_text())
+    del data['hooks'][event]  # As left by a release that knew fewer events.
+    hooks_file.write_text(json.dumps(data))
+    trust = True if name == 'codex' else None
+    result = json.loads(cli('setup').stdout)['hooks'][name]
+    assert result['status'] == 'updated' and result['home'] == str(custom) and result.get('trust_required') is trust
+    assert 'note' not in result  # Not on PATH: nothing says where the agent would look.
+    assert event in json.loads(hooks_file.read_text())['hooks']
+    assert not (tmp_path / 'user').exists()
+    cli.env['PATH'] = fake_agents(tmp_path, name)
+    result = json.loads(cli('setup').stdout)['hooks'][name]
+    assert result['status'] == 'already installed' and str(tmp_path / 'user' / f'.{name}') in result['note']
+    assert f'acp activity uninstall --target {name} {option} {custom}' in result['note']
+    assert not (tmp_path / 'user').exists()
+    # A command from an earlier install location is replaced, which Codex must trust again.
+    manifest = cli.home / 'data' / f'{name}-activity.hooks.json'
+    for path in (manifest, hooks_file):
+        path.write_text(path.read_text().replace(sys.executable, '/old/python'))
+    result = json.loads(cli('setup').stdout)['hooks'][name]
+    assert result['status'] == 'updated' and result.get('trust_required') is trust
+    text = hooks_file.read_text()
+    assert '/old/python' not in text and sys.executable in text
 
 
 def test_setup_preserves_config_and_service_runs_full_demo_flow(cli):
