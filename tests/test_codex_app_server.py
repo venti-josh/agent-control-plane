@@ -64,6 +64,12 @@ def agent(thread, turn, prompt):
     acp('/comments', {'body': 'Fake plan'})
     if '[crash]' in text:
         os._exit(3)
+    if '[fail]' in text:
+        send({'method': 'error', 'params': {'threadId': thread, 'turnId': turn, 'willRetry': False,
+                                            'error': {'message': 'usage limit reached'}}})
+        return finish('failed')
+    if '[elicit]' in text:
+        record(elicitation=ask('mcpServer/elicitation/request', {'threadId': thread, 'message': 'Sign in?'}))
     if '[approve]' in text or '[patch]' in text:
         if '[patch]' in text:
             send({'method': 'item/started', 'params': {'threadId': thread, 'turnId': turn, 'item': {
@@ -96,7 +102,7 @@ for line in sys.stdin:
     message = json.loads(line)
     record(message=message)
     if 'method' not in message:
-        replies[message['id']] = message.get('result') or {}
+        replies[message['id']] = message.get('result') or message.get('error')
         answers[message['id']].set()
         continue
     method, params, rid = message['method'], message.get('params') or {}, message.get('id')
@@ -119,9 +125,11 @@ for line in sys.stdin:
         result = {'turn': {'id': state['turn'], 'items': [], 'status': 'inProgress'}}
         threading.Thread(target=agent, args=(params['threadId'], state['turn'], params['input'][0]['text']),
                          daemon=True).start()
-    elif method == 'turn/steer':
+    elif method == 'turn/steer':  # Reply first: the runner records delivery before the agent reports.
+        send({'id': rid, 'result': {'turnId': params['expectedTurnId']}})
+        time.sleep(0.2)
         steers.append(params['input'][0]['text'])
-        result = {'turnId': params['expectedTurnId']}
+        continue
     elif method == 'turn/interrupt':
         interrupted.set()
         result = {}
@@ -174,16 +182,23 @@ async def test_runner_selection_probes_once_and_honors_run_mode(svc, fake_codex,
     assert await probe(sys.executable) is False
     assert await probe(str(tmp_path / 'missing')) is False
     runner = CodexRunner()
-    task = svc.create_task('Routed', provider='codex', state='todo')
-    await Worker(svc, runners={'codex': runner}).run_once()
-    assert runner.app_server is True
-    assert fake_codex('thread/start') and svc.get_task(task['id'])['state'] == 'ready_for_review'
+    for title in ('Routed', 'Routed again'):
+        task = svc.create_task(title, provider='codex', state='todo')
+        await Worker(svc, runners={'codex': runner}).run_once()
+        assert svc.get_task(task['id'])['state'] == 'ready_for_review'
+    assert runner.app_server is True and len(fake_codex('thread/start')) == 2
+    probes = [m for m in fake_codex('initialize') if 'capabilities' not in m['params']]
+    assert len(probes) == 2  # The direct probe of the fake above, then one for the runner's first run.
     svc.settings.codex_run_mode = 'exec'
     exec_task = svc.create_task('Forced exec', provider='codex', state='todo')
     await Worker(svc, runners={'codex': runner}).run_once()
     current = svc.get_task(exec_task['id'])
     assert current['state'] == 'ready_for_review' and current['session_id'] == 'exec-thread'
     assert any('exec' in r.get('argv', []) for r in fake_codex())
+
+
+def resume_excludes_turns(fake_codex):
+    return all(m['params'].get('excludeTurns') for m in fake_codex('thread/resume'))
 
 
 async def test_launch_complete_then_resume_same_thread_for_answer_and_changes(svc, fake_codex, settings):
@@ -200,6 +215,11 @@ async def test_launch_complete_then_resume_same_thread_for_answer_and_changes(sv
     assert params['config']['mcp_servers.acp.env']['ACP_TASK_ID'] == task['id']
     assert params['config']['sandbox_workspace_write.writable_roots'][0].endswith('.git')
     assert 'projectId' not in params  # This server has no project/list.
+    config = params['config']
+    assert config['mcp_servers.acp.default_tools_approval_mode'] == 'prompt'
+    assert all(config[f'mcp_servers.acp.tools.{tool}.approval_mode'] == 'approve'
+               for tool in ('get_task', 'add_comment', 'request_input', 'submit_for_review'))
+    assert resume_excludes_turns(fake_codex)
     assert fake_codex('thread/name/set')[0]['params'] == {'threadId': thread, 'name': 'ACP: Ask first'}
     assert 'TASK SNAPSHOT' in fake_codex('turn/start')[0]['params']['input'][0]['text']
     assert current['runs'][0]['status'] == 'succeeded'
@@ -273,7 +293,8 @@ async def test_other_answer_declines_and_steers_with_the_text(svc, fake_codex):
     assert [r['decision'] for r in fake_codex() if 'decision' in r] == ['decline']
     [steer] = fake_codex('turn/steer')
     assert 'write it inside the repo instead' in steer['params']['input'][0]['text']
-    assert 'Decision: decline steer:' in svc.get_task(task['id'])['comments'][-2]['body']
+    assert any(c['body'].startswith('Decision: decline steer:') and 'inside the repo' in c['body']
+               for c in svc.get_task(task['id'])['comments'])
 
 
 async def test_file_change_approval_lists_files(svc, fake_codex):
@@ -283,6 +304,8 @@ async def test_file_change_approval_lists_files(svc, fake_codex):
     current = svc.get_task(task['id'])
     blocker = next(c for c in current['comments'] if c['id'] == current['blocker_comment_id'])
     assert '/outside/notes.md' in blocker['body'] and current['approval']['method'] == 'item/fileChange/requestApproval'
+    await asyncio.sleep(3.5)  # Past the 3 s terminal-state rule: a parked approval keeps the run alive.
+    assert not running.done() and svc.get_task(task['id'])['runs'][0]['status'] == 'running'
     svc.add_comment(task['id'], 'accept', in_reply_to=blocker['id'], resume=True)
     await asyncio.wait_for(running, 15)
     assert svc.get_task(task['id'])['state'] == 'ready_for_review'
@@ -322,7 +345,9 @@ async def test_server_crash_fails_the_run(svc, fake_codex):
 
 async def test_lingering_turn_is_interrupted_after_the_task_reports(svc, fake_codex):
     task = svc.create_task('Linger', '[linger]', provider='codex', state='todo')
+    started_at = asyncio.get_running_loop().time()
     await asyncio.wait_for(Worker(svc).run_once(), 15)
+    assert asyncio.get_running_loop().time() - started_at > 3
     assert fake_codex('turn/interrupt')
     assert svc.get_task(task['id'])['runs'][0]['status'] == 'succeeded'
 
@@ -432,3 +457,69 @@ async def test_unanswered_request_times_out_with_a_message(tmp_path):
         with pytest.raises(TimeoutError, match='did not answer thread/start'):
             await rpc.request('thread/start', timeout=0.05)
         await rpc.close()
+
+
+async def test_failed_turn_reports_codex_error(svc, fake_codex):
+    task = svc.create_task('Fails', '[fail]', provider='codex', state='todo')
+    await Worker(svc).run_once()
+    current = svc.get_task(task['id'])
+    assert current['runs'][0]['status'] == 'failed' and 'usage limit reached' in current['runs'][0]['error']
+
+
+async def test_other_server_requests_get_an_error_so_the_turn_continues(svc, fake_codex):
+    task = svc.create_task('Elicit', '[elicit]', provider='codex', state='todo')
+    await asyncio.wait_for(Worker(svc).run_once(), 15)
+    [reply] = [r['elicitation'] for r in fake_codex() if 'elicitation' in r]
+    assert 'does not handle' in reply['message']
+    assert svc.get_task(task['id'])['state'] == 'ready_for_review'
+
+
+async def test_control_socket_websocket_roundtrip_and_stale_socket_fallback(svc, fake_codex, monkeypatch):
+    import base64
+    import hashlib
+    import shutil
+    import struct
+    import tempfile
+    from pathlib import Path
+    from acp.codex_app_server import UnixWebSocket, control_socket
+    short = Path(tempfile.mkdtemp(prefix='acp-ws-', dir='/tmp'))  # Unix socket paths are length-limited.
+    monkeypatch.setenv('CODEX_HOME', str(short / 'home'))
+
+    async def serve(reader, writer):  # A minimal WebSocket echo server, like the daemon's framing.
+        head = await reader.readuntil(b'\r\n\r\n')
+        key = [l.split(b': ')[1] for l in head.split(b'\r\n') if l.lower().startswith(b'sec-websocket-key')][0]
+        accept = base64.b64encode(hashlib.sha1(key + b'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest())
+        writer.write(b'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n'
+                     b'Sec-WebSocket-Accept: ' + accept + b'\r\n\r\n')
+        writer.write(b'\x89\x00')  # A ping the client must answer.
+        while True:
+            first, second = await reader.readexactly(2)
+            n = second & 0x7F
+            n = struct.unpack('!H', await reader.readexactly(2))[0] if n == 126 else \
+                struct.unpack('!Q', await reader.readexactly(8))[0] if n == 127 else n
+            mask = await reader.readexactly(4)
+            data = bytes(b ^ mask[i % 4] for i, b in enumerate(await reader.readexactly(n)))
+            if first & 0x0F == 0xA:
+                continue
+            size = bytes([n]) if n < 126 else b'\x7e' + struct.pack('!H', n) if n < 65536 else b'\x7f' + struct.pack('!Q', n)
+            writer.write(b'\x81' + size + data)
+            await writer.drain()
+
+    path = short / 'ws.sock'
+    server = await asyncio.start_unix_server(serve, str(path))
+    socket = await UnixWebSocket.connect(path)
+    for size in (5, 300, 70000):  # 7-bit, 16-bit and 64-bit lengths.
+        await socket.send('x' * size)
+        assert await socket.recv() == 'x' * size
+    await socket.close()
+    server.close()
+
+    async def hang_up(reader, writer):
+        writer.close()
+    control_socket().parent.mkdir(parents=True)
+    stale = await asyncio.start_unix_server(hang_up, str(control_socket()))
+    task = svc.create_task('Stale socket', provider='codex', state='todo')
+    await Worker(svc).run_once()
+    stale.close()
+    shutil.rmtree(short)
+    assert svc.get_task(task['id'])['state'] == 'ready_for_review' and fake_codex('thread/start')

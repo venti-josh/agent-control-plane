@@ -130,7 +130,7 @@ def test_checksum_mismatch_or_bad_version_stops_nothing(settings, tools):
     assert tools.events == [] and tools.changes() == []
 
 
-def test_running_cli_runs_block_the_restart_but_app_and_queued_runs_do_not(settings, service, tools):
+def test_running_runs_block_the_restart_but_queued_runs_do_not(settings, service, tools):
     from acp.update import active_cli_runs, update
     service.create_task('Queued', state='todo')
     assert active_cli_runs(settings) == 0

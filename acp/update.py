@@ -90,7 +90,7 @@ def checkout(source: Path, uv: str, folder: Path) -> tuple[str, Path]:
 
 
 def active_cli_runs(settings: Settings) -> int:
-    """Board runs a restart would interrupt; queued runs wait and Codex app runs survive."""
+    """Board runs a restart would interrupt; queued runs wait."""
     path = settings.db_path
     if not path.exists():
         return 0
