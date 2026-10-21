@@ -432,6 +432,33 @@ up through the agent or your normal repository tools.
 Raw provider logs are in `<data-dir>/logs/<run-id>.jsonl`; task state and events
 are in `<data-dir>/board.sqlite3`.
 
+### Claude runs as background sessions
+
+When the installed Claude Code CLI supports `claude --bg`, ACP runs each Claude task
+as a Claude background session instead of a headless `claude -p` process. The session
+is named after the task and listed by `claude agents` and in the Claude app. Attach
+with `claude attach <id>` to watch it or to answer a permission prompt; the run keeps
+going and the agent still reports through the ACP tools. A tool outside ACP's allowlist
+waits at a permission prompt (headless mode denied it instead): ACP posts a comment and
+the run stays In Progress until you answer with `claude attach <id>` or the run limit is
+hit. Answers and change requests resume the same session (`claude --bg --resume
+<session>`), which keeps the ACP address it was started with; after changing `ACP_URL`
+or the port, use **Reset agent session** on tasks that already have one. Only the task's
+current session may report: an older session reopened by hand can read the task, but its
+`add_comment`, `request_input` and `submit_for_review` calls are refused. ACP stops the
+session with `claude stop <id>` when the run ends, when you cancel the task, when the run
+limit is hit, and when `acp stop` shuts the worker down. A session that ends its turn
+without calling `request_input` or `submit_for_review` fails the run with a message
+pointing at `claude attach <id>`, which reopens the stopped session; one that exits
+points at `claude --resume <session>`. The run log keeps the launch output and status
+changes.
+
+Claude only backgrounds a trusted repository: run `claude` in it once and accept the
+trust prompt, or the run fails with that message. ACP probes `claude --help` once per
+service start; set `CLAUDE_RUN_MODE=headless` in the config to keep the previous
+headless mode, or `CLAUDE_RUN_MODE=background` to skip the probe. Finished sessions stay
+in `claude agents --all` until you run `claude rm <id>`.
+
 The agent gets four task-scoped MCP tools:
 
 ```text
@@ -478,7 +505,7 @@ tools so they work without prompts. Sandbox escalations go to the board (see
 or the `codex exec` fallback they fail instead. The installed Codex CLI must support
 per-tool MCP approval configuration.
 
-By default only one run executes at a time. `MAX_CONCURRENT_RUNS` increases this across tasks; there is still at most one active run per task. `RUN_TIMEOUT_SECONDS` bounds a run (default 30 minutes). In CLI mode, stopping the server or a task terminates its process group. A small non-agent process guard also terminates that group if the owning server dies unexpectedly.
+By default only one run executes at a time. `MAX_CONCURRENT_RUNS` increases this across tasks; there is still at most one active run per task. `RUN_TIMEOUT_SECONDS` bounds a run (default 30 minutes). For headless CLI runs, stopping the server or a task terminates the agent's process group, and a small non-agent process guard also terminates that group if the owning server dies unexpectedly. Claude background sessions are owned by Claude: ACP stops them with `claude stop`, and a session left behind by a crashed server is stopped when its task next runs, or by you with `claude agents` and `claude stop <id>`.
 
 ## Headless usage
 
