@@ -25,6 +25,12 @@ from .config import Settings, config_path
 AGENTS = ('claude', 'codex')
 
 
+def which(command):
+    """An absolute path to the executable (a relative PATH entry gives a relative one), or None."""
+    path = shutil.which(command)
+    return os.path.abspath(path) if path else None
+
+
 class ACPServer(uvicorn.Server):
     async def shutdown(self, sockets=None):
         # End EventSource responses before Uvicorn waits for connections to drain.
@@ -36,7 +42,7 @@ def setup() -> dict:
     """Create the configuration once, then connect ACP to every agent CLI that is installed."""
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    found = {name: shutil.which(name) for name in AGENTS}
+    found = {name: which(name) for name in AGENTS}
     created = False
     try:
         with open(path, 'x', opener=lambda p, flags: os.open(p, flags, 0o600)) as file:
@@ -52,7 +58,7 @@ def setup() -> dict:
     settings = Settings.from_env()
     # Detect what ACP would actually run: an existing configuration may name an agent outside PATH.
     commands = {'claude': settings.claude_command, 'codex': settings.codex_command}
-    found = {name: shutil.which(command) for name, command in commands.items()}
+    found = {name: which(command) for name, command in commands.items()}
     values = {**{k: v for k, v in dotenv_values(path).items() if v is not None}, **os.environ}
     enabled = values.get('ACP_ACTIVITY_HOOKS', '1').strip().lower() not in {'0', 'false', 'no', 'off'}
     return {'config': str(path), 'data': str(settings.data_dir), 'created': created,

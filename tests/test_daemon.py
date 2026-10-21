@@ -94,11 +94,13 @@ def test_setup_without_agents_skips_hooks_and_later_agents_get_them(cli, tmp_pat
                                 'codex': {'command': 'codex', 'found': False}}
     assert result['hooks'] == {'codex': {'status': 'skipped: not found'}, 'claude': {'status': 'skipped: not found'}}
     assert not (tmp_path / 'user').exists() and not list((cli.home / 'data').glob('*.hooks.json'))
-    # Codex alone becomes the default provider.
+    # Codex alone becomes the default provider; a relative PATH entry still yields an absolute path.
     config.unlink()
-    cli.env['PATH'] = fake_agents(tmp_path, 'codex')
+    fake_agents(tmp_path, 'codex')
+    cli.env['PATH'] = 'fake-bin:/usr/bin:/bin'
     result = json.loads(cli('setup').stdout)
     assert 'DEFAULT_PROVIDER=codex\n' in config.read_text() and 'CLAUDE_COMMAND=claude\n' in config.read_text()
+    assert f'CODEX_COMMAND={tmp_path}/fake-bin/codex\n' in config.read_text()
     assert result['hooks']['codex']['status'] == 'installed' and result['hooks']['claude'] == {'status': 'skipped: not found'}
     # An agent installed later gets hooks on the next setup (an update); the configuration is never modified.
     before = config.read_bytes()
@@ -164,6 +166,7 @@ def test_setup_refreshes_installed_hooks_at_their_recorded_home(cli, tmp_path, n
     cli.env['PATH'] = fake_agents(tmp_path, name)
     result = json.loads(cli('setup').stdout)['hooks'][name]
     assert result['status'] == 'already installed' and str(tmp_path / 'user' / f'.{name}') in result['note']
+    assert f'acp activity uninstall --target {name} {option} {custom}' in result['note']
     assert not (tmp_path / 'user').exists()
     # A command from an earlier install location is replaced, which Codex must trust again.
     manifest = cli.home / 'data' / f'{name}-activity.hooks.json'

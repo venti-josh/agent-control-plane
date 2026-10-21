@@ -331,8 +331,10 @@ def setup_hooks(data_dir, executable, found, enabled=True):
                 entry['trust_required'] = True  # Codex trusts hook commands only through its /hooks UI.
         current = module.config_home()
         if found.get(name) and home.resolve() != current.resolve():
-            entry['note'] = (f'kept at the recorded home; the current home is {current}. '
-                             'Run acp activity uninstall, then install, to move the hooks.')
+            option = '--codex-home' if name == 'codex' else '--claude-config-dir'
+            entry['note'] = (f'kept at the recorded home; the current home is {current}. To move them, run '
+                             f'acp activity uninstall --target {name} {option} {shlex.quote(str(home))}, '
+                             f'then acp activity install --target {name}.')
         report[name] = entry
     return report
 
