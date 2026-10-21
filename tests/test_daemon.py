@@ -17,7 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def cli(tmp_path):
     env = {k: v for k, v in os.environ.items()
            if not k.startswith('ACP_') and k not in {'DEFAULT_PROVIDER', 'DEFAULT_REPO'}}
-    env.update(ACP_HOME=str(tmp_path / 'home'), PYTHONPATH=str(ROOT), POLL_SECONDS='0.02')
+    # ACP_OVERLAY=0: a real `acp start` on a Mac would otherwise compile and open Comet.
+    env.update(ACP_HOME=str(tmp_path / 'home'), PYTHONPATH=str(ROOT), POLL_SECONDS='0.02', ACP_OVERLAY='0')
 
     def run(*args, check=True):
         result = subprocess.run([sys.executable, '-m', 'acp.cli', *args], env=env,
@@ -52,6 +53,8 @@ def test_setup_preserves_config_and_service_runs_full_demo_flow(cli):
     second = json.loads(cli('start').stdout)
     assert first['pid'] == second['pid']
     assert first['running'] and first['healthy']
+    assert first['comet']['skipped'] == 'ACP_OVERLAY=0' and second['comet'] == first['comet']
+    assert json.loads(cli('status').stdout)['comet']['skipped'] == 'ACP_OVERLAY=0'
     task = json.loads(cli('create', 'Installed demo', '--provider', 'demo',
                           '--description', '[ask]', '--state', 'todo').stdout)
     task_id = task['id']
@@ -68,7 +71,7 @@ def test_setup_preserves_config_and_service_runs_full_demo_flow(cli):
         assert stream.status_code == 200
         cli('stop')
     assert not json.loads(cli('status').stdout)['running']
-    cli('stop')
+    assert json.loads(cli('stop').stdout)['comet']['running'] is False
     cli('start', '--port', '0')
     assert json.loads(cli('show', task_id).stdout)['state'] == 'done'
 
@@ -198,3 +201,77 @@ def test_foreground_serve_uses_same_identity_and_can_be_stopped(cli, tmp_path):
         if process.poll() is None:
             process.terminate()
             process.wait(timeout=10)
+
+
+@pytest.fixture
+def comet(monkeypatch, settings):
+    """Comet as `acp start`/`stop` see it on a Mac, with every native step recorded instead of run."""
+    from acp import daemon, overlay
+    monkeypatch.setattr(daemon.sys, 'platform', 'darwin')
+    state = {'running': False, 'calls': [], 'build': {'built': True, 'executable': 'Leo'}}
+
+    def start(s, url):
+        state['calls'].append(('start', url))
+        state['running'] = True
+        return overlay.status(s)
+
+    def stop(s):
+        state['calls'].append('stop')
+        state['running'] = False
+        return overlay.status(s)
+    monkeypatch.setattr(overlay, 'status', lambda s: {'running': state['running'], 'log': 'leo.log'})
+    monkeypatch.setattr(overlay, 'build', lambda s: state['calls'].append('build') or state['build'])
+    monkeypatch.setattr(overlay, 'start', start)
+    monkeypatch.setattr(overlay, 'stop', stop)
+    return state
+
+
+def test_comet_starts_once_with_the_service_and_stops_with_it(settings, comet):
+    from acp import daemon
+    url = 'http://127.0.0.1:1'
+    assert daemon.comet_start(settings, url) == {'running': True, 'log': 'leo.log'}
+    assert comet['calls'] == ['build', ('start', url)]
+    # Already running: a second start changes nothing, not even the panel's visibility.
+    assert daemon.comet_start(settings, url)['running'] is True
+    assert daemon.comet_status(settings)['running'] is True
+    assert comet['calls'] == ['build', ('start', url)]
+    assert daemon.comet_stop(settings)['running'] is False
+    assert comet['calls'][-1] == 'stop'
+
+
+def test_comet_is_skipped_without_swiftc_when_disabled_or_off_macos(settings, comet, monkeypatch):
+    from acp import daemon
+    comet['build'] = {'built': False, 'skipped': 'swiftc is not installed. xcode-select --install'}
+    result = daemon.comet_start(settings, 'http://127.0.0.1:1')
+    assert result['running'] is False and 'xcode-select' in result['skipped']
+    assert comet['calls'] == ['build']
+    settings.overlay_enabled = False
+    assert daemon.comet_start(settings, 'http://127.0.0.1:1')['skipped'] == 'ACP_OVERLAY=0'
+    assert daemon.comet_status(settings)['skipped'] == 'ACP_OVERLAY=0'
+    comet['running'] = True  # started by hand with acp overlay start: reported, left alone
+    assert 'skipped' not in daemon.comet_status(settings)
+    assert daemon.comet_start(settings, 'http://127.0.0.1:1')['running'] is True
+    assert comet['calls'] == ['build']
+    monkeypatch.setattr(daemon.sys, 'platform', 'linux')
+    settings.overlay_enabled = True
+    assert 'macOS' in daemon.comet_start(settings, 'http://127.0.0.1:1')['skipped']
+    assert 'macOS' in daemon.comet_status(settings)['skipped']
+    assert daemon.comet_stop(settings) == {'running': False}
+    assert comet['calls'] == ['build']
+
+
+def test_comet_failures_never_fail_the_service_commands(settings, comet, monkeypatch):
+    from acp import daemon, overlay
+
+    def broken(message):
+        def fail(*args):
+            raise ValueError(message)
+        return fail
+    monkeypatch.setattr(overlay, 'build', broken('Comet could not compile.\nerror: boom'))
+    result = daemon.comet_start(settings, 'http://127.0.0.1:1')
+    assert result['running'] is False
+    assert result['skipped'] == 'Comet could not compile. Run acp overlay build for details.'
+    comet['running'] = True
+    monkeypatch.setattr(overlay, 'stop', broken('Comet did not acknowledge the command.'))
+    result = daemon.comet_stop(settings)
+    assert result['running'] is True and result['error'] == 'Comet did not acknowledge the command.'

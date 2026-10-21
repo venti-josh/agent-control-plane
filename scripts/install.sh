@@ -56,6 +56,17 @@ acp_install_main() (
     fi
     "$acp_uv" tool install --python 3.14 --reinstall --constraints "$acp_tmp/constraints.txt" "$acp_tmp/$acp_wheel"
     "$acp_bin_dir/acp" setup
+    # Comet, the macOS overlay, is compiled now so `acp start` can open it at once. It needs the
+    # Apple command line tools; without them (or with ACP_OVERLAY=0) the install still succeeds.
+    if [ "$(uname -s)" = Darwin ] && [ "${ACP_OVERLAY:-1}" != 0 ]; then
+        if acp_comet=$("$acp_bin_dir/acp" overlay build 2>"$acp_tmp/comet.log" </dev/null); then
+            acp_comet_skipped=$(printf '%s\n' "$acp_comet" | sed -n 's/^ *"skipped": "\(.*\)",*$/\1/p')
+            if [ -n "$acp_comet_skipped" ]; then printf 'Comet: %s\n' "$acp_comet_skipped"
+            else printf 'Comet is built; it opens with acp start (ACP_OVERLAY=0 opts out).\n'; fi
+        else
+            printf 'Comet could not be built: %s\nFix that, then run acp overlay build.\n' "$(tail -n 1 "$acp_tmp/comet.log")"
+        fi
+    fi
     printf '\nACP %s installed.\nRun: %s/acp start\nThen: %s/acp open\n' "$acp_version" "$acp_bin_dir" "$acp_bin_dir"
     printf 'To run tasks in the Codex app, open Settings → Codex app and copy the setup prompt.\n'
     case ":$PATH:" in *":$acp_bin_dir:"*) ;; *) printf 'Add %s to PATH to use the short acp command.\n' "$acp_bin_dir" ;; esac

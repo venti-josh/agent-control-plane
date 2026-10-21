@@ -48,6 +48,7 @@ class Settings:
     github_token: str = ""
     max_delivery_attempts: int = 8
     webhook_max_age_seconds: int = 60
+    overlay_enabled: bool = True  # ACP_OVERLAY=0 keeps Comet out of acp start on macOS
 
     @property
     def db_path(self) -> Path:
@@ -114,6 +115,7 @@ class Settings:
             linear_states=json.loads(getenv("LINEAR_STATES_JSON", "{}")),
             github_webhook_secret=getenv("GITHUB_WEBHOOK_SECRET", ""),
             github_token=getenv("GITHUB_TOKEN", ""),
+            overlay_enabled=getenv("ACP_OVERLAY", "1").strip().lower() not in {"0", "false", "no", "off"},
         )
         s.load_linear()
         if getenv('REPO_SEARCH_ROOTS') is not None:

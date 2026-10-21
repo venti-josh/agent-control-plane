@@ -54,24 +54,38 @@ def status(settings: Settings) -> dict:
     return {'running': False, 'log': str(folder / 'leo.log')}
 
 
-def build(settings: Settings) -> Path:
+SOURCE = Path(__file__).parent / 'native' / 'Leo.swift'
+CLT_HINT = 'Install the Apple command line tools (xcode-select --install), then run acp overlay build.'
+
+
+def executable_path(settings: Settings) -> Path:
+    return directory(settings) / 'Leo.app' / 'Contents' / 'MacOS' / 'Leo'
+
+
+def build(settings: Settings) -> dict:
+    """Compile Comet when its source changed. Where it cannot be built, say why instead of failing,
+    so installers and `acp start` carry on without it; a failed compile still raises."""
     if sys.platform != 'darwin':
-        raise ValueError('Comet is a native macOS overlay. The ACP board is still available on other systems.')
+        return {'built': False, 'skipped': 'Comet is a native macOS overlay; nothing to build on this system.'}
     folder = directory(settings)
-    source = Path(__file__).parent / 'native' / 'Leo.swift'
-    digest = hashlib.sha256(source.read_bytes()).hexdigest()
-    app = folder / 'Leo.app'
-    executable = app / 'Contents' / 'MacOS' / 'Leo'
+    executable = executable_path(settings)
     stamp = folder / 'build.sha256'
+    digest = hashlib.sha256(SOURCE.read_bytes()).hexdigest()
     if executable.is_file() and stamp.exists() and stamp.read_text() == digest:
-        return executable
+        return {'built': False, 'executable': str(executable)}
     compiler = shutil.which('swiftc')
     if not compiler:
-        raise ValueError('Install the Apple command line tools (xcode-select --install) to build Comet once.')
+        return {'built': False, 'skipped': 'swiftc is not installed, so Comet was not built. ' + CLT_HINT}
+    compile_app(compiler, folder / 'Leo.app', executable)
+    stamp.write_text(digest)
+    return {'built': True, 'executable': str(executable)}
+
+
+def compile_app(compiler: str, app: Path, executable: Path) -> None:
     executable.parent.mkdir(parents=True, exist_ok=True)
     candidate = executable.with_suffix('.building')
     try:
-        result = subprocess.run([compiler, str(source), '-o', str(candidate), '-O',
+        result = subprocess.run([compiler, str(SOURCE), '-o', str(candidate), '-O',
                                  '-framework', 'AppKit', '-framework', 'WebKit'],
                                 capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired:
@@ -84,8 +98,6 @@ def build(settings: Settings) -> Path:
             'NSAppTransportSecurity': {'NSAllowsLocalNetworking': True}}
     (app / 'Contents' / 'Info.plist').write_bytes(plistlib.dumps(info))
     candidate.replace(executable)
-    stamp.write_text(digest)
-    return executable
 
 
 def control(settings: Settings, action: str) -> dict:
@@ -96,7 +108,7 @@ def control(settings: Settings, action: str) -> dict:
         if action == 'quit':
             return current
         raise ValueError('Comet is not running. Use acp overlay start.')
-    executable = directory(settings) / 'Leo.app' / 'Contents' / 'MacOS' / 'Leo'
+    executable = executable_path(settings)
     request_id = secrets.token_hex(16)
     result = subprocess.run([str(executable), '--control', str(directory(settings)), action, request_id],
                             capture_output=True, text=True, timeout=5)
@@ -128,7 +140,10 @@ def start(settings: Settings, url: str = '') -> dict:
                     response.raise_for_status()
         except httpx.HTTPError:
             raise ValueError('Start ACP from this version first; Comet needs /overlay and /api/activity at ' + origin)
-        executable = build(settings)
+        built = build(settings)
+        if built.get('skipped'):
+            raise ValueError(built['skipped'])
+        executable = Path(built['executable'])
         (folder / 'state.json').unlink(missing_ok=True)
         token_file = folder / 'control.token'
         with open(token_file, 'w', opener=lambda p, flags: os.open(p, flags, 0o600)) as file:
