@@ -305,7 +305,7 @@ async function init() {
     $('linear-owner').textContent = `Connected as ${linearDiscovery.user.name}`;
     $('linear-team').innerHTML = linearDiscovery.teams.map(t => `<option value="${esc(t.id)}">${esc(t.name)} (${esc(t.key)})</option>`).join('');
     if (linearDiscovery.teams.some(t => t.id === linearStatus.team_id)) $('linear-team').value = linearStatus.team_id;
-    setProvider($('linear-provider'), linearStatus.provider || 'codex');
+    setProvider($('linear-provider'), config.providers.includes(linearStatus.provider) ? linearStatus.provider : 'codex');
     $('linear-setup-form').hidden = !linearDiscovery.teams.length;
     $('linear-connect-form').hidden = !!linearDiscovery.teams.length;
     $('linear-save').textContent = linearStatus.configured ? 'Save changes' : 'Connect Linear';

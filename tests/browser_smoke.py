@@ -24,7 +24,8 @@ def main():
         sock = socket.socket()
         sock.bind(('127.0.0.1', 0))
         url = f'http://127.0.0.1:{sock.getsockname()[1]}'
-        settings = Settings(data_dir=Path(tmp), base_url=url, poll_seconds=.03)
+        # The hidden demo provider keeps every run simulated; no agent CLI is launched.
+        settings = Settings(data_dir=Path(tmp), base_url=url, poll_seconds=.03, default_provider='demo')
         server = uvicorn.Server(uvicorn.Config(create_app(settings), log_level='error', ws='none'))
         thread = threading.Thread(target=lambda: server.run(sockets=[sock]), daemon=True)
         thread.start()
@@ -85,6 +86,9 @@ def main():
                 review = page.locator('[data-state="ready_for_review"] .card')
                 expect(waiting).to_have_count(1, timeout=10000)
                 expect(review).to_have_count(1, timeout=10000)
+                # Providers the UI does not offer are labelled, never rendered as undefined.
+                expect(page.locator('#default-provider')).to_have_text('Default: Not configured')
+                expect(waiting.locator('.provider')).to_have_text('Not configured')
                 page.screenshot(path=os.getenv('ACP_SCREENSHOT', str(Path(tmp)/'board.png')), full_page=True)
                 # Close a blocked task through the actual dialog without restarting it.
                 blocked = svc.create_task('Blocked completion')
@@ -118,6 +122,7 @@ def main():
                 waiting = page.locator('[data-state="waiting_on_input"] .card').filter(has_text='Clarify the acceptance criteria')
                 waiting.click()
                 expect(page.locator('#resume-task')).to_be_visible()
+                expect(page.locator('#edit-form [name="provider"]')).to_have_value('demo')
                 page.locator('#comment-body').fill('Acceptance criterion: a plain text report.')
                 page.locator('#resume-task').click()
                 expect(page.locator('#request-changes')).to_be_visible(timeout=10000)
@@ -130,7 +135,9 @@ def main():
                 page.get_by_role('button', name='+ New task').click()
                 page.locator('#create-form [name="title"]').fill('Browser-created task')
                 page.locator('#create-form [name="description"]').fill('<script>noHTML()</script>')
-                # The form only offers real agents; add the hidden demo provider so no agent CLI runs.
+                # The form offers only the server's providers and falls back to the first for an unknown default.
+                assert page.eval_on_selector('#create-form [name=provider]', 'el => [[...el.options].map(o => o.value), el.value]') == [['claude', 'codex'], 'claude']
+                # Add the hidden demo provider so the browser-created task runs without an agent CLI.
                 page.evaluate("document.querySelector('#create-form [name=provider]').insertAdjacentHTML('beforeend', '<option value=\"demo\">Demo</option>')")
                 page.locator('#create-form [name="provider"]').select_option('demo')
                 if os.getenv('ACP_BROWSER_BRIDGE') != '1':

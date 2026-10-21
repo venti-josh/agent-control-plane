@@ -27,7 +27,7 @@ def config_path() -> Path:
 class Settings:
     data_dir: Path = field(default_factory=lambda: Path(".acp").resolve())
     base_url: str = "http://127.0.0.1:8765"
-    default_provider: str = "demo"
+    default_provider: str = "demo"  # in-code default for the test suite; users get "claude" from from_env()
     default_repo: str = ""
     repo_search_roots: list[str] = field(default_factory=lambda: [str(Path.home() / name) for name in
                                                                ('Documents', 'Projects', 'Developer', 'code', 'src')])

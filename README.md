@@ -336,8 +336,8 @@ or is canceled; the UI never reports waiting time as task execution.
 
 Available in v0.1.2 and later. Earlier releases use CLI execution and ACP-managed worktrees.
 
-Install and sign in to Codex, then open ACP **Settings → Codex app → Copy setup
-prompt**. Paste that prompt into Codex once. The agent creates a dedicated ACP
+Install and sign in to Codex, then open ACP **Settings → Codex app → Connection
+details → Copy setup prompt**. Paste that prompt into Codex once. The agent creates a dedicated ACP
 dispatcher chat and connects it to this board. You can also get the prompt with:
 
 ```sh
