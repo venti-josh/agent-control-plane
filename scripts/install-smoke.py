@@ -55,9 +55,9 @@ def install(expect_success=True):
         assert b'acp stop' in result.stderr
 
 
-def cli(*argv):
+def cli(*argv, timeout=35):
     result = subprocess.run([exe, *argv], env=env, cwd=base / 'outside-repo',
-                            capture_output=True, text=True, timeout=35)
+                            capture_output=True, text=True, timeout=timeout)
     assert result.returncode == 0, result.stdout + result.stderr
     return json.loads(result.stdout)
 
@@ -153,8 +153,9 @@ If changes are requested, update the SAME files/tests, rerun unittest, and resub
                '--description', description, '--state', 'todo', *extra)
     task_id = task['id']
     report['task_id'] = task_id
-    wait_for(task_id, 'waiting_on_input', 1)
-    cli('answer', task_id, 'Use an exclamation mark: greet("Ada") must return "Hello, Ada!".')
+    task = wait_for(task_id, 'waiting_on_input', 1)
+    cli('answer', task_id, 'Use an exclamation mark: greet("Ada") must return "Hello, Ada!".',
+        '--blocker-id', task['blocker_comment_id'])
     task = wait_for(task_id, 'ready_for_review', 2)
     if args.live:
         verify_output(task)
@@ -182,6 +183,17 @@ If changes are requested, update the SAME files/tests, rerun unittest, and resub
         text=True, capture_output=True, cwd=base / 'outside-repo', env=env, timeout=10)
     assert callback.returncode == 0 and json.loads(callback.stdout) == {}, callback.stderr
     assert cli('activity', 'status')['observed_since'] is not None
+    # `acp update` against this same release: current, then a reinstall that restarts the service.
+    check = cli('update', '--check')
+    assert check['update_available'] is False and check['installed_version'] == check['target_version'], check
+    running = cli('status')
+    updated = cli('update', '--reinstall', timeout=240)
+    assert updated['updated'] and updated['installed_version'] == check['target_version'], updated
+    assert updated['restarted'] == {'service': True, 'overlay': False}, updated
+    after = cli('status')
+    assert after['healthy'] and after['url'] == running['url'] and after['pid'] != running['pid'], after
+    assert config.read_bytes() == original
+    report['update_verified'] = True
     report['reinstall_preserved_hooks'] = True
     report['installed_hook_callback_verified'] = True
     saved = cli('show', task_id)
