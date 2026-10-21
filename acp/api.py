@@ -20,7 +20,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__
 from .claude_activity import combined_summary
-from .config import LABELS, PROVIDERS, STATES, Settings
+from .config import LABELS, STATES, UI_PROVIDERS, Settings
 from .integrations import Integrations, verify_signature
 from .service import DomainError, TaskService
 from .store import Store
@@ -269,7 +269,8 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True,
     def config():
         linear_saved = settings.load_linear()
         return {"states": [{"id": s, "label": label} for s, label in zip(STATES, LABELS)],
-                "providers": list(PROVIDERS), "default_provider": settings.default_provider,
+                "providers": list(UI_PROVIDERS), "default_provider": settings.default_provider,
+                "claude_command": settings.claude_command, "codex_command": settings.codex_command,
                 "default_repo": settings.default_repo, "linear_enabled": settings.linear_enabled,
                 "linear_user_name": linear_saved.get('user_name', ''),
                 "github_enabled": bool(settings.github_webhook_secret), "codex_desktop": desktop.status()["connected"]}
@@ -340,7 +341,7 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True,
             raise DomainError("Run not found", 404)
         path = settings.data_dir / "logs" / f"{run_id}.jsonl"
         if not path.exists():
-            return "No subprocess log. Demo runs do not launch an external provider."
+            return "No subprocess log for this run."
         with path.open("rb") as f:
             length = f.seek(0, 2)
             if length > 512000:

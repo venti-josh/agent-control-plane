@@ -98,11 +98,10 @@ def main() -> None:
     create = sub.add_parser("create")
     create.add_argument("title")
     create.add_argument("--description", default="")
-    create.add_argument("--provider", choices=["claude", "codex", "demo"])
+    create.add_argument("--provider", metavar="{claude,codex}")
     create.add_argument("--repo")
     create.add_argument("--state", choices=["planning", "todo"], default="planning")
     sub.add_parser("list")
-    sub.add_parser("demo")
     show = sub.add_parser("show")
     show.add_argument("task_id")
     move = sub.add_parser("move")
@@ -151,13 +150,13 @@ def main() -> None:
     configure.add_argument('--team-id', required=True)
     configure.add_argument('--states-file', help='Optional JSON object of lane names to status IDs')
     configure.add_argument('--create-missing', action='store_true', help='Create missing statuses in Linear')
-    configure.add_argument('--provider', choices=['codex', 'claude', 'demo'], default='codex')
+    configure.add_argument('--provider', metavar='{codex,claude}', default='codex')
     linear_sub.add_parser('sync', help='Sync issues carrying the acp label')
     hook = linear_sub.add_parser('webhook')
     hook.add_argument('--url', required=True, help='Public HTTPS URL ending in /hooks/linear')
     imp = linear_sub.add_parser('import')
     imp.add_argument('issue_id')
-    imp.add_argument('--provider', choices=['codex', 'claude', 'demo'])
+    imp.add_argument('--provider', metavar='{codex,claude}')
     imp.add_argument('--repo')
     imp.add_argument('--question')
     overlay = sub.add_parser('overlay', help='macOS floating Comet companion above other applications')
@@ -347,15 +346,6 @@ def main() -> None:
             result = request(base, "POST", f"/api/tasks/{args.task_id}/request-changes", {"feedback": args.feedback}, idempotency_key=args.request_id)
         elif args.command in {"cancel", "reset-session"}:
             result = request(base, "POST", f"/api/tasks/{args.task_id}/{args.command}")
-        elif args.command == "demo":
-            result = [request(base, "POST", "/api/tasks", item) for item in [
-                {"title": "Try the input loop", "description": "[ask] Simulate an agent asking for a requirement.",
-                 "provider": "demo", "state": "todo"},
-                {"title": "Try the review loop", "description": "Simulate output, then request a revision.",
-                 "provider": "demo", "state": "todo"},
-                {"title": "Your first real task", "description": "Choose Claude or Codex and a local Git repo, then move to Todo.",
-                 "provider": "demo"},
-            ]]
         elif args.command == "events":
             if args.follow:
                 with httpx.stream("GET", base + f"/api/events/stream?after={args.after}",
