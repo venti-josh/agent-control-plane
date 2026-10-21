@@ -38,9 +38,9 @@ start a new turn. Set `ACP_ACTIVITY_HOOKS=0` (in the environment or in
 fails setup.
 
 ```sh
-acp start          # Background service; closing the terminal is safe
+acp start          # Background service (plus Comet on macOS); closing the terminal is safe
 acp open           # Open the board in your browser
-acp status         # JSON: running, reachable, healthy, URL, PID, log path
+acp status         # JSON: running, reachable, healthy, URL, PID, log path, comet
 acp logs           # Last 100 log lines; use --lines 500 for more
 acp stop           # Stop ACP and CLI runs; stop desktop turns in Codex
 acp update         # Install the latest release; restart what was running
@@ -63,15 +63,25 @@ does not stop tasks. Interactive API documentation is at the reported URL plus
 
 ### Comet’s macOS activity overlay
 
-Run `uv run --locked acp overlay start` with the ACP service running to open the
-native floating macOS panel. It stays above ordinary apps and can follow Spaces.
+On macOS the installer builds Comet, the native floating panel, and `acp start`
+opens it once the service is up; `acp stop` closes it, and `acp status` reports it
+under `comet`. Building needs Apple's command line tools (`xcode-select --install`).
+Without them the install and `acp start` still succeed and say that Comet was
+skipped; once the tools are present, run `acp start` again (or `acp overlay build`
+to compile without opening it). `acp overlay build` also rebuilds Comet after its
+source changes, as `acp start` does after `acp update`.
+Set `ACP_OVERLAY=0` in the environment or `config.env` to keep Comet out of
+`acp start`; `acp overlay start` and `acp overlay stop` remain available as manual
+controls either way, and `acp stop` still closes it. In a checkout, use
+`uv run --locked acp overlay build` and `uv run --locked acp start`.
+
+The panel stays above ordinary apps and can follow Spaces.
 Drag anywhere on the square tile to move it; click without dragging to expand or
 minimize it. Drag the small bottom-right grip to resize; the pet and counters
 scale together, and your size is remembered. Both sizes share one translucent,
 borderless surface.
 The comet in the macOS menu bar provides Show, Hide, Reset position, and Quit.
-Position and display preferences are saved locally. Building the panel once
-requires Apple's command line tools (`xcode-select --install`).
+Position and display preferences are saved locally.
 
 To test without touching live agents, run:
 
@@ -200,8 +210,10 @@ acp update --source PATH      # Install from a local checkout (development)
 `acp update` downloads the release's wheel and constraints and verifies them
 against its `SHA256SUMS`, as the installer does. It checks everything before
 stopping anything. It then stops the service and the Comet overlay, reinstalls
-with `uv tool install --reinstall`, runs `acp setup`, and restarts only what was
-running (the service on its previous port). An installed release that is already
+with `uv tool install --reinstall`, runs `acp setup`, and restarts what was
+running: the service on its previous port, which opens Comet again unless
+`ACP_OVERLAY=0` (rebuilt if its source changed), or Comet alone if only it was
+running. An installed release that is already
 current is left alone unless you pass `--reinstall`. A `--source` checkout is
 always installed, since its code can differ under the same version number.
 
