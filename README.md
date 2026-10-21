@@ -59,7 +59,7 @@ The service keeps running after the terminal closes. It does **not** restart
 automatically after a reboot or crash; run `acp start` again. Stopping interrupts
 CLI runs and retains their session references for explicit retry. Active Codex desktop runs retain their run and chat identities across a service restart. Agent files stay where the agent created them. Closing a browser tab
 does not stop tasks. Interactive API documentation is at the reported URL plus
-`/docs`. Choose **Try a demo** to exercise input and review without an agent account.
+`/docs`.
 
 ### Comet’s macOS activity overlay
 
@@ -278,8 +278,10 @@ under `.acp/install-smoke-*` and stops its service when finished.
 Merge the version change into `main`. The **CI and release** workflow runs only on
 pushes to `main`; feature branches, pull requests, and tag pushes do not run CI.
 It checks macOS and Linux with Python 3.11 and 3.14. If `vX.Y.Z` is not already
-published, it builds and smoke-tests the installed demo on both platforms, then
+published, it builds and smoke-tests the installed CLI on both platforms, then
 creates the tag at the tested commit and publishes the exact verified Linux assets.
+The smoke test runs its task with the hidden `demo` provider, a simulated agent that
+the API accepts but the UI and CLI do not offer, so it needs no agent credentials.
 Do not create a tag manually. Subsequent pushes with the same published version run
 checks but skip publication. To release again, increase both versions and run
 `uv lock`, then merge into `main`.
@@ -369,8 +371,8 @@ or is canceled; the UI never reports waiting time as task execution.
 
 Available in v0.1.2 and later. Earlier releases use CLI execution and ACP-managed worktrees.
 
-Install and sign in to Codex, then open ACP **Settings → Codex app → Copy setup
-prompt**. Paste that prompt into Codex once. The agent creates a dedicated ACP
+Install and sign in to Codex, then open ACP **Settings → Codex app → Connection
+details → Copy setup prompt**. Paste that prompt into Codex once. The agent creates a dedicated ACP
 dispatcher chat and connects it to this board. You can also get the prompt with:
 
 ```sh
@@ -593,7 +595,7 @@ Deleting a subscription prevents its undelivered jobs from sending. All event hi
 
 Open **Settings → Linear**. Paste a personal API key (or save
 `LINEAR_API_KEY` in `~/.local/share/acp/config.env`), then click **Continue**.
-Choose a team and the agent for labeled issues: Codex, Claude Code, or Demo.
+Choose a team and the agent for labeled issues: Codex or Claude Code.
 ACP discovers your account and matches statuses automatically. If statuses are
 missing, their names are shown before you connect. Click **Connect Linear**. ACP creates the
 `acp` label if it does not exist. No restart or hand-written status JSON is needed.
@@ -821,4 +823,4 @@ This is an independent implementation, not a fork of Symphony.
 - Linear webhook validation: https://linear.app/developers/webhooks
 - GitHub webhook events: https://docs.github.com/en/webhooks/webhook-events-and-payloads
 
-Provider CLI behavior can change. The native adapters need a real authenticated smoke test on the machine where you will run them; the included demo is not proof of provider integration.
+Provider CLI behavior can change. The native adapters need a real authenticated smoke test on the machine where you will run them; the simulated smoke-test provider is not proof of provider integration.
