@@ -110,7 +110,7 @@ const activityOverlay = (() => {
       status.hidden = true;
       tile.classList.remove('is-unavailable');
       native?.postMessage({action:'metrics', data:{...data, mood}});
-    } catch (error) {
+    } catch {
       status.hidden = false; tile.classList.add('is-unavailable');
       for (const id of ['running','waiting','30m','1h','3h']) document.getElementById(`activity-${id}`).textContent = '—';
       tile.dataset.mood = 'unavailable';
