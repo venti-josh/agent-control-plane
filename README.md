@@ -42,7 +42,7 @@ acp start          # Background service (plus Comet on macOS); closing the termi
 acp open           # Open the board in your browser
 acp status         # JSON: running, reachable, healthy, URL, PID, log path, comet
 acp logs           # Last 100 log lines; use --lines 500 for more
-acp stop           # Stop ACP and CLI runs; stop desktop turns in Codex
+acp stop           # Stop ACP and its agent runs
 acp update         # Install the latest release; restart what was running
 ```
 
@@ -57,7 +57,7 @@ the last worker error until restart; it does not change which instance receives 
 
 The service keeps running after the terminal closes. It does **not** restart
 automatically after a reboot or crash; run `acp start` again. Stopping interrupts
-CLI runs and retains their session references for explicit retry. Active Codex desktop runs retain their run and chat identities across a service restart. Agent files stay where the agent created them. Closing a browser tab
+agent runs and retains their session references for explicit retry. Agent files stay where the agent created them. Closing a browser tab
 does not stop tasks. Interactive API documentation is at the reported URL plus
 `/docs`.
 
@@ -227,9 +227,9 @@ first update from a release before 0.1.6 runs that release's updater, which
 installs the hooks but shows no report: run `acp setup` once afterwards to see
 it.
 
-The restart would interrupt board CLI runs that are in progress, so `acp update`
+The restart would interrupt board runs that are in progress, so `acp update`
 refuses while any are running; wait for them, cancel them, or pass `--force`.
-Queued runs and Codex app runs survive the restart. `acp update` restarts only
+Queued runs survive the restart. `acp update` restarts only
 the managed service: stop any foreground `acp serve` using the same executable
 first. Configuration and task data survive. `uv tool upgrade acp` is not the
 update path for downloaded wheel installations.
@@ -349,97 +349,49 @@ to an earlier blocker are retained as context with `resume_queued: false`, witho
 scheduling work. The browser pins an answer draft to its original blocker across
 live updates and explains when a stale answer was saved without resuming.
 
-## Run tasks in the Codex app
+## Codex runs and approvals
 
-Queue acceptance, dispatcher claim, and task start are separate milestones. A saved
-connection means **configured**, not ready. Accepted work stays active while awaiting
-the dispatcher or task check-in, including across a Codex app restart. After two
-minutes ACP adds one actionable delay comment; it does not expire the approved work.
-The execution timeout begins only when the task chat checks in and stops when
-it submits input or review. Dispatcher acknowledgment is tracked separately: a
-delay preserves the result and queued follow-ups, and after two minutes exposes
-an acknowledgment warning and same-chat reconciliation. Task details show
-the milestones, and pending desktop work is excluded from the board's running count.
+Codex tasks run through Codex's app-server protocol. Each run starts a private
+`codex app-server` (or connects to the shared daemon's control socket,
+`~/.codex/app-server-control/app-server-control.sock`, when one is running), starts
+or resumes the task's thread, and sends the task prompt as a turn. Nothing has to
+stay open: no Codex app window and no dispatcher chat. ACP checks once per service
+start that `codex app-server` answers; if it doesn't (older CLI), Codex runs fall
+back to `codex exec --json`. Set `CODEX_RUN_MODE=app-server` or `exec` to force one.
 
-Use **Retry delivery** (or **Reconcile handoff** after a claim) in task details, or
-`acp desktop recover RUN_ID`. This queues delivery for the same active run, with a
-30-second retry throttle. It does not create a new run or reapply approval. If Codex
-still has not claimed it, open the configured dispatcher chat and resolve its resume
-or approval request. Queueing alone is not a documented desktop wake guarantee.
-Before sending a task prompt, preparation grants one send and persists its handoff
-marker. Repeated notifications resume preparation only before that grant; after it,
-they observe the bound chat or require evidence of the exact marker to reconcile
-an uncertain handoff. Missing partial history never authorizes a blind resend. Canceled and terminal runs stay revoked;
-retry those through the normal answer-and-resume flow to create a new run.
+**Approvals in ACP.** When Codex wants to leave its sandbox (a command outside the
+workspace, or a file change it needs permission for), the task moves to Waiting on
+Input with a blocker showing the command, directory and reason (or the files). The
+run stays live, waiting. Answer with the **Accept**, **Accept for session** or
+**Decline** buttons in the task, or `acp answer TASK accept --blocker-id ID`; the
+task returns to In Progress in the same run. Any other answer declines and is passed
+to Codex as guidance. If the run times out while waiting, the request is cancelled.
+`CODEX_APPROVALS` chooses who answers:
 
-Both Codex app and ACP service restarts retain active desktop runs. ACP reattaches
-to the same run and chat, preserving the original execution deadline. Dispatcher
-notification failures have three durable attempts with backoff; permanent failures
-and exhausted budgets require explicit recovery. Restarting does not reset the
-budget or bypass a pending retry deadline. Health and task details expose waiting
-work, unresolved handoffs, and exhausted delivery instead of reporting them ready.
-Waiting desktop work retains the existing serialized dispatcher slot until it starts
-or is canceled; the UI never reports waiting time as task execution.
+| Value | Behavior |
+| --- | --- |
+| `acp` (default) | Approval requests come to the board as above. |
+| `auto_review` | Codex's auto reviewer decides; its verdict appears in the run log. |
+| `never` | No approvals; commands that need escalation fail (the old `codex exec` behavior). |
 
-Available in v0.1.2 and later. Earlier releases use CLI execution and ACP-managed worktrees.
+**Comments.** A comment on an In Progress Codex task is steered into the live turn
+(`turn/steer`); each comment is delivered once. A comment the turn ends before
+receiving becomes a follow-up run. Comments on Waiting on Input or Ready for Review
+tasks resume the same thread in a new run. **Stop / unqueue** interrupts the turn.
 
-Install and sign in to Codex, then open ACP **Settings → Codex app → Connection
-details → Copy setup prompt**. Paste that prompt into Codex once. The agent creates a dedicated ACP
-dispatcher chat and connects it to this board. You can also get the prompt with:
+**In the Codex app.** Threads live in `~/.codex` like any other, named
+`ACP: <task title>`, and open in the Codex app with their full history. With Codex
+CLI 0.163 or later (`brew upgrade --cask codex`), ACP files each new thread under
+the app project whose folder contains the repository, so it appears in that
+project's list; older CLIs create threads without a project. The app runs its own
+server, so it doesn't show a run live while ACP's server holds the thread; don't
+send messages to an ACP thread from the app while its task is In Progress. With
+the shared daemon running, `codex agents` shows ACP's live threads.
 
-```sh
-acp desktop instructions
-acp desktop status
-```
-
-Keep the Codex app open with the ACP dispatcher chat open in a window: Codex
-delivers queued messages only to chats that are open, so a run queued while the
-dispatcher chat is closed waits until you open it. Codex tasks then run automatically in app chats, with the
-same chat resumed for answers and requested revisions. New human comments on
-In Progress tasks steer their existing active app chat automatically. The dispatcher
-checks for comments between 10-second waits and forwards them through the app's
-message tool, without waiting for the task to finish or starting another ACP run.
-Comments on Waiting on Input or Ready for Review tasks queue a continuation in
-the same chat. Todo comments join queued task context. Planning, Deploy, and Done
-comments remain notes; edits, bot comments, and mirrored agent updates do not
-trigger work. CLI providers receive comments in a follow-up after the active process
-finishes; in-flight steering is available for connected Codex app tasks.
-
-Delivery is recorded per comment. An interrupted dispatcher never blindly resends
-an uncertain message: it must inspect the target chat for the comment ID and confirm
-delivery before acknowledging it. New feedback blocks an agent's stale review/input
-submission until delivery is confirmed. Cancellation still revokes the run; it never
-turns an old comment into a new automatic retry. Linear webhooks deliver changes as
-they arrive; polling-only installations discover them on the existing 60-second
-scan. App scheduling and tool latency also affect delivery time.
-
-The agent manages its working directory and any worktree. The
-supported `codex queue` command wakes the dispatcher; the dispatcher uses the app's
-thread tools to create/continue task chats and observe completion. It performs a
-small coordination turn for each run, including follow-ups. A connected dispatcher
-coordinates one Codex app run at a time; extra worker slots remain available to
-other providers. No lifecycle hooks,
-private IPC, desktop UI automation, or hook-trust bypass are installed.
-
-The agent chooses a repository from ACP's local catalog when the task has no
-repository. Normal Codex app permissions still apply. A task's In Progress state
-begins only when its app chat calls back, and a run finishes only after the
-dispatcher acknowledges the chat's actual completion. Queue delivery is not
-completion. Existing CLI sessions are not adopted as app-owned chats; the first
-app run gets a new chat with task history and any previously saved workspace path as context.
-
-**Stopping:** stop the active turn in Codex. **Cancel tracking** in ACP revokes the
-run's result permissions; it cannot forcibly interrupt a desktop turn. An
-unacknowledged previous app run blocks overlapping retries, session resets, and
-provider changes until its dispatcher acknowledges completion. After an ACP
-restart, inspect the retained app chat before retrying. If the dispatcher itself
-was interrupted, ask it to reconcile its last run and acknowledge the completed
-or interrupted task chat using the command in its dispatch prompt.
-
-To connect an existing dedicated dispatcher, an agent can run
-`acp desktop connect --thread CHAT_UUID`. Use `acp desktop disconnect` when there
-are no unresolved app runs. Existing app tasks require reconnection or an explicit
-session reset before CLI execution. Claude remains a CLI provider.
+**Upgrading from the dispatcher (0.1.5 and earlier).** The Codex app dispatcher,
+`acp desktop` commands and Settings → Codex app are gone; nothing needs to be
+disconnected. Tasks bound to a dispatcher-created chat start a fresh thread on their
+next run; their history stays on the task.
 
 ## Use a real agent through the CLI
 
@@ -468,8 +420,7 @@ identifier use the agent's normal naming. This supports PR linking through
 
 CLI agents start in the selected repository. Existing tasks from earlier versions
 start in their saved workspace for session compatibility, without enforcing a
-branch or recreating missing files. Codex app tasks use their app chat's workspace
-and normal app tools. A workspace chosen by the agent can be reported in a progress
+branch or recreating missing files. A workspace chosen by the agent can be reported in a progress
 comment or submitted as an output path; ACP does not manage its lifecycle.
 
 The task's session ID is retained for answers and revisions, never the provider's
@@ -517,7 +468,7 @@ request_input(question)
 submit_for_review(summary, output_url="", kind="text")
 ```
 
-The short reporting contract is in `acp/workflow.md`. ACP does not prescribe planning, implementation, Git, or testing steps. It asks the agent to report a blocking question or its result and actual verification, then end the turn for your response. Desktop prompts use equivalent run-scoped CLI commands instead of MCP instructions.
+The short reporting contract is in `acp/workflow.md`. ACP does not prescribe planning, implementation, Git, or testing steps. It asks the agent to report a blocking question or its result and actual verification, then end the turn for your response.
 
 For a task linked to Linear, include evidence in an ACP comment or review summary:
 
@@ -540,8 +491,7 @@ comment containing broken local links. Existing HTTP(S) links, code examples, an
 source links ending in `:line` or `#Lline` are preserved. Plain paths, relative links,
 reference-style Markdown, and attachments appearing only in the agent's chat are
 not uploaded. Previously saved comments are not backfilled; resubmit evidence in
-a new comment. Install the updated ACP package and restart its service to enable
-this behavior for the running desktop bridge.
+a new comment.
 
 To produce a PR, instruct the task to create/update a GitHub PR and submit its canonical URL with `kind="pr"`. Your local Git and `gh` credentials must already permit that work. ACP itself does not independently create or merge PRs. A subsequent change-request run receives the retained session, task history, and new review feedback.
 
@@ -550,9 +500,10 @@ To produce a PR, instruct the task to create/update a GitHub PR and submit its c
 This is a **trusted local development tool**, not a security sandbox. A Git worktree isolates checkouts, not machine access. Claude is allowed its normal file tools, Bash, and the four task tools. Codex uses its workspace-write sandbox with network access and writable Git metadata for its launch repository. Review code and instructions in repositories before running an agent against them. Never give this unauthenticated board untrusted users or expose its API publicly.
 
 The Codex adapter explicitly approves only the four task-scoped ACP MCP
-tools so they work in headless mode. Its general approval policy remains `never`;
-commands needing sandbox escalation fail rather than prompting an absent user.
-The installed Codex CLI must support per-tool MCP approval configuration.
+tools so they work without prompts. Sandbox escalations go to the board (see
+[Codex runs and approvals](#codex-runs-and-approvals)); with `CODEX_APPROVALS=never`
+or the `codex exec` fallback they fail instead. The installed Codex CLI must support
+per-tool MCP approval configuration.
 
 By default only one run executes at a time. `MAX_CONCURRENT_RUNS` increases this across tasks; there is still at most one active run per task. `RUN_TIMEOUT_SECONDS` bounds a run (default 30 minutes). For headless CLI runs, stopping the server or a task terminates the agent's process group, and a small non-agent process guard also terminates that group if the owning server dies unexpectedly. Claude background sessions are owned by Claude: ACP stops them with `claude stop`, and a session left behind by a crashed server is stopped when its task next runs, or by you with `claude agents` and `claude stop <id>`.
 
@@ -578,7 +529,7 @@ acp reset-session TASK_ID
 acp events --follow
 ```
 
-Any new human comment on a task in Waiting on Input queues a follow-up for the agent to evaluate, whether it comes from the board, CLI, API, or Linear. No reply target or `/resume` command is required. Delayed Linear comments posted before the current blocking question are retained as context without waking the agent. The task moves to In Progress when the agent starts. Multiple comments waiting for the agent are combined into one queued run. `answer` remains a shortcut for replying to the blocker; `changes` queues a run for Ready for Review. Edits, agent progress updates, bot comments, integration echoes, and approval events never wake an agent on their own. New human comments on In Progress desktop tasks steer the existing chat; on Ready for Review they queue a continuation. Todo comments join queued context. Planning, Deploy, and Done comments do not start work.
+Any new human comment on a task in Waiting on Input queues a follow-up for the agent to evaluate, whether it comes from the board, CLI, API, or Linear. No reply target or `/resume` command is required. Delayed Linear comments posted before the current blocking question are retained as context without waking the agent. The task moves to In Progress when the agent starts. Multiple comments waiting for the agent are combined into one queued run. `answer` remains a shortcut for replying to the blocker; `changes` queues a run for Ready for Review. Edits, agent progress updates, bot comments, integration echoes, and approval events never wake an agent on their own. New human comments on In Progress Codex tasks steer the live turn; on Ready for Review they queue a continuation. Todo comments join queued context. Planning, Deploy, and Done comments do not start work.
 
 The same operations are available through `TaskService` functions and HTTP. Main routes:
 
@@ -649,7 +600,7 @@ The board owner is discovered from the API key and shown in the app. A different
 user must use a separate ACP data directory; changing keys cannot silently transfer
 board ownership. Existing
 labeled issues are discovered automatically. Unlabeled issues are ignored.
-Removing the label or assigning the issue to someone else cancels ACP runs and hides the card; stop any active desktop turn in Codex. History, sessions,
+Removing the label or assigning the issue to someone else cancels ACP runs and hides the card. History, sessions,
 and worktrees remain. Re-adding it restores the same task. Archived issues,
 issues moved outside the selected team, and unmapped statuses (such as Canceled)
 are also removed from the active board. Todo and In Progress queue execution;
@@ -671,7 +622,7 @@ Within a labeled issue, use:
 /changes Add coverage for the expired-token case.
 ```
 
-Any new human comment on a waiting or review issue resumes the task, including top-level comments and replies in other threads. Comments on an active Codex app task steer its existing chat.
+Any new human comment on a waiting or review issue resumes the task, including top-level comments and replies in other threads. Comments on an In Progress Codex task steer its live turn.
 `/resume` applies while Waiting; `/changes` applies while Ready for Review.
 A silent drag into Waiting is rejected and corrected because ACP requires an
 explicit blocking question. Move an issue to Done only after reviewing its output.
@@ -790,7 +741,7 @@ The worker starts agents and routes events; it never asks a separate agent to cl
 
 A database uniqueness constraint prevents concurrent live runs on the same task; follow-up inputs coalesce into one pending run. A process lock prevents two app workers against the same database. Do not run Uvicorn with multiple workers or live-reload for this app.
 
-After a restart, active Codex desktop runs retain their identities and resume observation. Interrupted CLI runs become Waiting on Input with an explanation. Queued work is retained. Interrupted code-writing runs do **not** automatically retry: inspect the agent chat and files, then move to Todo or answer the blocker. Delivery jobs, unlike agent runs, are safe to retry with stable deduplication IDs.
+After a restart, interrupted runs become Waiting on Input with an explanation. Queued work is retained. Interrupted code-writing runs do **not** automatically retry: inspect the agent chat and files, then move to Todo or answer the blocker. Delivery jobs, unlike agent runs, are safe to retry with stable deduplication IDs.
 
 Back up the data directory with the server stopped (SQLite WAL files matter for live copies), plus any worktrees and provider session storage you need. Secrets are not included in this source package; runtime `.env` files, database contents, logs, and code outputs can contain sensitive information. No automatic backup, migrations between future schema versions, worktree cleanup, or multi-host execution is included.
 
@@ -842,7 +793,7 @@ which live integrations were exercised.
 | `update.py` | `acp update`: verified release or checkout reinstall with a safe restart. |
 | `claude_activity.py` | Global Claude Code hook installation, observed intervals, and the combined summary. |
 | `activity.py` | Legacy ACP-run activity accounting. |
-| `desktop.py` | Supported Codex app queue, dispatch lifecycle, run-scoped actions. |
+| `codex_app_server.py` | Codex runs over app-server JSON-RPC (stdio or daemon socket), approvals, steering. |
 | `mcp_server.py` | Four task tools exposed over stdio. |
 | `integrations.py` | Single-workspace Linear sync and GitHub review events. |
 | `api.py` | HTTP API, SSE, UI, signed webhook listener. |

@@ -70,12 +70,8 @@ const attempt = (fn) => async (event) => {
   finally { if (button) button.disabled = false; }
 };
 function safeLink(url, title=url) { return /^https?:\/\//i.test(url) ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>` : `<span>${esc(title)}</span>`; }
-function runLabel(status, startedAt, desktopPhase) {
-  if (status === 'running' && !startedAt && desktopPhase) {
-    return desktopPhase === 'dispatched' ? 'Awaiting dispatcher' : 'Awaiting task start';
-  }
-  return status || 'Not started';
-}
+function runLabel(status) { return status || 'Not started'; }
+const decisionLabels = {accept: 'Accept', 'accept for session': 'Accept for session', decline: 'Decline'};
 function drawBoard() {
   $('task-count').textContent = `${tasks.length} task${tasks.length === 1 ? '' : 's'}`;
   const running = tasks.filter(t => t.run_status === 'running' && t.run_started_at).length;
@@ -129,14 +125,13 @@ function drawTask() {
   $('task-short-id').textContent = 'TASK ' + task.id.slice(0,8).toUpperCase();
   $('task-heading').textContent = task.title;
   const blocker = task.comments.find(c => c.id === task.blocker_comment_id);
-  $('task-summary').innerHTML = `<div class="meta"><span class="provider ${esc(task.provider)}">${esc(providerLabel(task.provider))}</span><span>${esc(config.states.find(s => s.id === task.state).label)}</span>${task.linear_url ? safeLink(task.linear_url,'Open in Linear ↗') : ''}${task.branch ? `<span>${esc(task.branch)}</span>` : ''}</div><p class="task-description">${esc(task.description)}</p>${blocker ? `<div class="blocker"><strong>Waiting on your input</strong><br>${esc(blocker.body)}</div>` : ''}${task.last_error ? `<p class="hint">Last run error: ${esc(task.last_error)}</p>` : ''}`;
+  $('task-summary').innerHTML = `<div class="meta"><span class="provider ${esc(task.provider)}">${esc(providerLabel(task.provider))}</span><span>${esc(config.states.find(s => s.id === task.state).label)}</span>${task.linear_url ? safeLink(task.linear_url,'Open in Linear ↗') : ''}${task.branch ? `<span>${esc(task.branch)}</span>` : ''}</div><p class="task-description">${esc(task.description)}</p>${blocker ? `<div class="blocker"><strong>${task.approval ? 'Codex needs your approval' : 'Waiting on your input'}</strong><br>${esc(blocker.body)}${task.approval ? `<div class="comment-actions">${task.approval.decisions.map(d => `<button type="button" data-decision="${esc(d)}"${d === 'accept' ? ' class="primary"' : ''}>${esc(decisionLabels[d] || d)}</button>`).join('')}</div>` : ''}</div>` : ''}${task.last_error ? `<p class="hint">Last run error: ${esc(task.last_error)}</p>` : ''}`;
   const laneSelect = $('task-state');
   // Live events must not overwrite a lane the user selected but hasn't applied.
   const chosenLane = laneSelect.dataset.task === task.id && laneSelect.dataset.state === task.state
     ? laneSelect.value : task.state;
   laneSelect.innerHTML = config.states.map(s => `<option value="${s.id}" ${s.id === chosenLane ? 'selected' : ''} ${s.id === 'in_progress' ? 'disabled' : ''}>${s.label}</option>`).join('');
   laneSelect.dataset.task = task.id; laneSelect.dataset.state = task.state;
-  $('cancel-task').textContent = selected.provider === 'codex' && config.codex_desktop ? 'Cancel tracking (stop in Codex)' : 'Stop / unqueue';
   $('cancel-task').disabled = !task.runs.some(r => ['queued','running'].includes(r.status));
   $('output-section').hidden = !task.artifacts.length;
   $('task-outputs').innerHTML = task.artifacts.map(a => `<div class="output"><span class="chip">${esc(a.kind)}</span> ${a.kind === 'text' ? '' : safeLink(a.url)}<p>${esc(a.summary)}</p></div>`).join('');
@@ -144,23 +139,14 @@ function drawTask() {
   $('resume-task').hidden = task.state !== 'waiting_on_input';
   $('request-changes').hidden = task.state !== 'ready_for_review';
   $('task-runs').innerHTML = `<p class="hint">Session: ${esc(task.session_id || 'Not started')}<br>Workspace: ${esc(task.workspace || 'Managed by the agent')}</p>` + task.runs.map(r => {
-    const d = r.desktop;
     const current = ['queued','running'].includes(r.status);
     const recorded = r.finished_at ? `Finished: ${time(r.finished_at)}` : `Queued: ${time(r.created_at)}`;
-    const recoverable = r.status === 'running' && !r.stop_requested && d &&
-      (!r.started_at || r.activity_finished_at || (d.queue_error && !d.next_attempt_at));
-    const timing = d ? `<p class="hint">Dispatched: ${d.dispatched_at ? time(d.dispatched_at) : 'Unknown'} · Queue accepted: ${d.queue_accepted_at ? time(d.queue_accepted_at) : 'Not confirmed'} · Claimed: ${d.claimed_at ? time(d.claimed_at) : 'Not yet'} · Started: ${r.started_at ? time(r.started_at) : 'Not yet'}</p>` : '';
-    const recovery = recoverable ? `<p class="hint">${d.phase === 'dispatched' ? 'Delivery is pending. Codex delivers queued messages only to a chat open in a Codex window: open the connected ACP dispatcher chat in Codex and resolve any resume, approval, or usage-limit notice. Retry delivery keeps this same run.' : 'Inspect the dispatcher and retained task chat for approval or interrupted handoff. Do not resend the task prompt.'}</p>${!d.queue_inflight && (d.queue_accepted_at || d.queue_error) ? `<button type="button" data-recover-run="${esc(r.id)}">${d.phase === 'dispatched' ? 'Retry delivery' : 'Reconcile handoff'}</button>` : ''}` : '';
-    return `<div class="run"><span class="run-status ${esc(r.status)}">${current ? 'Current run' : 'Past run'}: ${esc(runLabel(r.status, r.started_at, d?.phase))}</span><code>${r.id.slice(0,8)}</code><span>${esc(r.trigger)}</span><a href="/api/runs/${r.id}/log" target="_blank" rel="noopener">View log ↗</a></div><p class="hint">${esc(recorded)}</p>${r.error ? `<p class="hint">Run error: ${esc(r.error)}</p>` : ''}${timing}${d?.queue_error ? `<p class="hint">Delivery attempt ${d.delivery_attempts}: ${esc(d.queue_error)}${d.next_attempt_at ? ' · Retry scheduled' : ' · Needs attention'}</p>` : ''}${recovery}`;
+    return `<div class="run"><span class="run-status ${esc(r.status)}">${current ? 'Current run' : 'Past run'}: ${esc(runLabel(r.status))}</span><code>${r.id.slice(0,8)}</code><span>${esc(r.trigger)}</span><a href="/api/runs/${r.id}/log" target="_blank" rel="noopener">View log ↗</a></div><p class="hint">${esc(recorded)}</p>${r.error ? `<p class="hint">Run error: ${esc(r.error)}</p>` : ''}`;
   }).join('');
-  document.querySelectorAll('[data-recover-run]').forEach(button => {
+  document.querySelectorAll('[data-decision]').forEach(button => {
     button.onclick = attempt(async () => {
-      button.disabled = true;
-      try {
-        await api(`/desktop/runs/${button.dataset.recoverRun}/recover`, 'POST', {});
-        toast('Delivery queued for the same run. Waiting for dispatcher claim.');
-        await refresh();
-      } finally { button.disabled = false; }
+      await api(`/tasks/${task.id}/comments`, 'POST', {body: button.dataset.decision, resume: true, in_reply_to: task.blocker_comment_id});
+      await refresh();
     });
   });
 }
@@ -217,22 +203,7 @@ async function linearBusy(id, work) {
   $(id).disabled = true;
   try { await work(); } finally { $(id).disabled = false; }
 }
-async function updateDesktopStatus() {
-  const state = await api('/desktop');
-  config.codex_desktop = state.connected;
-  $('desktop-badge').textContent = state.connected ? 'Configured' : 'CLI mode';
-  $('desktop-status').textContent = state.connected
-    ? `${state.state.replaceAll('_', ' ')} · ${state.waiting_runs} waiting · dispatcher chat ${state.thread_id}`
-    : 'Codex tasks run through the CLI. Connect the Codex app to run them in its chats instead.';
-  $('desktop-help').textContent = state.connected
-    ? 'A saved connection does not confirm readiness. Keep Codex open; inspect the dispatcher chat if delivery is delayed. Cancelling in ACP revokes results; stop active turns in Codex.'
-    : 'Paste the setup prompt into Codex once. It connects a dispatcher chat that creates and continues task chats automatically.';
-  $('desktop-thread').value = state.thread_id || '';
-  $('desktop-instructions').value = state.instructions;
-  $('desktop-disconnect').hidden = !state.connected;
-}
 async function showSettings() {
-  await updateDesktopStatus();
   await updateLinearStatus();
   const [subs, deliveries] = await Promise.all([api('/subscriptions'),api('/deliveries?status=failed')]);
   $('subscription-list').innerHTML = subs.map(s => `<div class="subscription"><button data-unsubscribe="${s.id}">Remove</button>${esc(s.url)}<br><code>${esc(s.types.join(', '))}</code></div>`).join('') || '<p class="hint">No outgoing subscriptions.</p>';
@@ -246,7 +217,7 @@ async function health() {
   try {
     const data = await api('/health');
     $('runtime-version').textContent = `ACP ${data.version}${data.build_revision ? ' · ' + data.build_revision.slice(0, 8) : ''}`;
-    const problems = [data.desktop?.requires_attention ? `Dispatcher: ${data.desktop.state.replaceAll('_', ' ')} · ${data.desktop.waiting_runs} waiting — open Settings or task details` : '', data.failed_deliveries ? `${data.failed_deliveries} failed integration/event deliveries — click to inspect` : '', data.worker_error ? 'Worker reported an error; check server logs.' : '', !data.worker_running ? 'The task worker is not running.' : ''].filter(Boolean);
+    const problems = [data.failed_deliveries ? `${data.failed_deliveries} failed integration/event deliveries — click to inspect` : '', data.worker_error ? 'Worker reported an error; check server logs.' : '', !data.worker_running ? 'The task worker is not running.' : ''].filter(Boolean);
     $('health-warning').hidden = !problems.length;
     $('health-warning').textContent = problems.join(' · ');
   } catch (_) { /* EventSource shows connection status. */ }
@@ -287,9 +258,6 @@ async function init() {
   $('request-changes').onclick = attempt(() => postComment('changes'));
   $('reset-session').onclick = attempt(async () => { await api(`/tasks/${selected.id}/reset-session`,'POST'); await refresh(); });
   $('settings-btn').onclick = attempt(showSettings);
-  $('desktop-copy').onclick = attempt(async () => { await navigator.clipboard.writeText($('desktop-instructions').value); toast('Paste this prompt into Codex to connect ACP.'); });
-  $('desktop-connect-form').onsubmit = attempt(async () => { await api('/desktop/connection','POST',{thread_id:$('desktop-thread').value.trim()}); await updateDesktopStatus(); });
-  $('desktop-disconnect').onclick = attempt(async () => { await api('/desktop/connection','POST',{thread_id:null}); await updateDesktopStatus(); });
   $('health-warning').onclick = attempt(showSettings);
   $('subscription-form').onsubmit = attempt(async () => {
     const data = Object.fromEntries(new FormData($('subscription-form'))); data.types = data.types.split(',').map(t => t.trim()).filter(Boolean);

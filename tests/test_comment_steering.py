@@ -1,9 +1,6 @@
-from uuid import uuid4
-
 import httpx
 import pytest
 
-from acp.desktop import DesktopBridge
 from acp.integrations import Integrations
 from acp.service import DomainError
 from conftest import reviewed, started
@@ -11,72 +8,62 @@ from test_integrations import comment_payload, imported
 
 
 def attached(service):
-    bridge = DesktopBridge(service)
-    bridge.connect(str(uuid4()))
-    task = service.create_task('Steer this task', provider='codex', state='todo')
-    run = service.claim_next()
-    bridge.dispatch(run['id'])
-    bridge.claim(run['id'])
-    session = str(uuid4())
-    bridge.started(run['id'], session)
-    return bridge, task, run, session
+    """A Codex app-server run with a live turn, as the runner leaves it after turn/start."""
+    task, run = started(service, provider='codex')
+    service.remember_session(run['id'], 'thread-1')
+    service.mark_steerable(run['id'])
+    return task, run
 
 
-def test_human_comment_steers_bound_chat_without_second_run(service):
-    bridge, task, run, session = attached(service)
+def test_human_comment_steers_live_turn_without_second_run(service):
+    task, run = attached(service)
     comment = service.add_comment(task['id'], 'Use the smaller design')
-    delivery = bridge.steering(run['id'])
-    assert delivery['action'] == 'send'
-    assert delivery['session_id'] == session
-    assert delivery['comment_id'] == comment['id']
-    assert 'Use the smaller design' in delivery['prompt']
-    assert len(service.get_task(task['id'])['runs']) == 1
-    assert bridge.steering(run['id'])['action'] == 'uncertain'
-    bridge.steered(run['id'], session, comment['id'])
-    bridge.steered(run['id'], session, comment['id'])
-    assert bridge.steering(run['id'])['action'] == 'wait'
-    bridge.action(run['id'], session, 'review', text='Applied the feedback')
-    bridge.complete(run['id'], session)
+    assert [c['id'] for c in service.pending_inputs(run['id'])] == [comment['id']]
+    assert service.claim_next() is None
+    service.input_delivered(comment['id'])
+    assert service.pending_inputs(run['id']) == []
+    service.submit_for_review(task['id'], 'Applied the feedback', run_id=run['id'])
+    service.finish_run(run['id'])
+    assert service.claim_next() is None
     assert service.get_task(task['id'])['runs'][0]['status'] == 'succeeded'
 
 
-def test_pending_steering_prevents_stale_pause_and_wrong_ack(service):
-    bridge, task, run, session = attached(service)
-    comment = service.add_comment(task['id'], 'One more requirement')
-    for action in ('review', 'input'):
-        with pytest.raises(DomainError, match='comments'):
-            bridge.action(run['id'], session, action, text='Stale result')
-    with pytest.raises(DomainError):
-        bridge.steered(run['id'], session, comment['id'])
-    bridge.steering(run['id'])
-    with pytest.raises(DomainError):
-        bridge.steered(run['id'], str(uuid4()), comment['id'])
-    service.cancel(task['id'])
-    with pytest.raises(DomainError):
-        bridge.steering(run['id'])
-    with pytest.raises(DomainError):
-        bridge.steered(run['id'], session, comment['id'])
-    bridge.complete(run['id'], session)
-    assert service.claim_next() is None
+def test_pending_steering_prevents_stale_pause(service):
+    task, run = attached(service)
+    service.add_comment(task['id'], 'One more requirement')
+    with pytest.raises(DomainError, match='comments'):
+        service.submit_for_review(task['id'], 'Stale result', run_id=run['id'])
+    with pytest.raises(DomainError, match='comments'):
+        service.request_input(task['id'], 'Stale question', run['id'])
 
 
 def test_agent_comments_and_edits_do_not_steer(service):
-    bridge, task, run, session = attached(service)
-    comment = bridge.action(run['id'], session, 'comment', text='Progress')
+    task, run = attached(service)
+    comment = service.add_comment(task['id'], 'Progress', run_id=run['id'])
     service.edit_comment(task['id'], comment['id'], 'Revised progress')
-    assert bridge.steering(run['id'])['action'] == 'wait'
+    assert service.pending_inputs(run['id']) == []
 
 
-def test_comment_on_review_automatically_resumes_same_chat(service):
-    bridge, task, run, session = attached(service)
-    bridge.action(run['id'], session, 'review', text='Ready')
-    comment = service.add_comment(task['id'], 'Please simplify this')
-    assert service.claim_next() is None
-    bridge.complete(run['id'], session)
+def test_undelivered_steering_becomes_a_followup(service):
+    task, run = attached(service)
+    comment = service.add_comment(task['id'], 'Also handle errors')
+    with service.store.transaction() as db:  # The turn ended before the steer landed.
+        db.execute("UPDATE tasks SET state='ready_for_review' WHERE id=?", (task['id'],))
+    service.finish_run(run['id'])
     followup = service.claim_next()
     assert followup['inputs'] == [{'trigger': 'comment', 'comment_id': comment['id']}]
-    bridge.dispatch(followup['id'])
-    assert bridge.claim(followup['id'])['session_id'] == session
+    assert service.get_task(task['id'])['session_id'] == 'thread-1'
+
+
+def test_comment_on_review_resumes_same_thread(service):
+    task, run = attached(service)
+    service.submit_for_review(task['id'], 'Ready', run_id=run['id'])
+    comment = service.add_comment(task['id'], 'Please simplify this')
+    assert service.claim_next() is None
+    service.finish_run(run['id'])
+    followup = service.claim_next()
+    assert followup['inputs'] == [{'trigger': 'comment', 'comment_id': comment['id']}]
+    assert service.get_task(task['id'])['session_id'] == 'thread-1'
 
 
 def test_cli_comment_schedules_retained_session_followup(service):
@@ -106,77 +93,40 @@ async def test_linear_human_comment_steers_once_and_filters_bots_edits_mirrors(l
     task = await imported(linear_service)
     linear_service.update_task(task['id'], provider='codex')
     linear_service.move_task(task['id'], 'todo')
-    bridge = DesktopBridge(linear_service)
-    bridge.connect(str(uuid4()))
     run = linear_service.claim_next()
-    bridge.dispatch(run['id'])
-    bridge.claim(run['id'])
-    session = str(uuid4())
-    bridge.started(run['id'], session)
+    linear_service.mark_started(run['id'])
+    linear_service.mark_steerable(run['id'])
     async with httpx.AsyncClient() as client:
         integration = Integrations(linear_service, client)
         payload = comment_payload('Adjust the design')
         await integration.handle_linear(payload)
         await integration.handle_linear(payload)
-        delivery = bridge.steering(run['id'])
-        assert delivery['action'] == 'send'
-        assert 'Adjust the design' in delivery['prompt']
-        bridge.steered(run['id'], session, delivery['comment_id'])
+        [pending] = linear_service.pending_inputs(run['id'])
+        assert 'Adjust the design' in pending['body']
+        linear_service.input_delivered(pending['id'])
         payload['action'] = 'update'
         payload['data']['body'] = 'Edited later'
         await integration.handle_linear(payload)
         bot = comment_payload('Bot note', 'bot')
         bot['actor']['type'] = 'application'
         await integration.handle_linear(bot)
-        await integration.handle_linear(comment_payload(
-            f'<!-- acp:{delivery["comment_id"]} -->\nMirrored text', 'mirror'))
-    assert bridge.steering(run['id'])['action'] == 'wait'
+        await integration.handle_linear(comment_payload(f'<!-- acp:{pending["id"]} -->\nMirrored text', 'mirror'))
+    assert linear_service.pending_inputs(run['id']) == []
     assert len(linear_service.get_task(task['id'])['runs']) == 1
 
 
 def test_deleted_pending_comment_does_not_steer_or_block_review(service):
-    bridge, task, run, session = attached(service)
+    task, run = attached(service)
     comment = service.add_comment(task['id'], 'Withdraw this feedback')
     service.edit_comment(task['id'], comment['id'], delete=True)
-    assert bridge.steering(run['id'])['action'] == 'wait'
-    bridge.action(run['id'], session, 'review', text='Ready')
+    assert service.pending_inputs(run['id']) == []
+    service.submit_for_review(task['id'], 'Ready', run_id=run['id'])
 
 
-def test_unresolved_send_cannot_be_completed_as_success(service):
-    bridge, task, run, session = attached(service)
-    service.add_comment(task['id'], 'New requirement')
-    bridge.steering(run['id'])
-    with pytest.raises(DomainError, match='comments'):
-        bridge.complete(run['id'], session)
-    assert service.get_task(task['id'])['runs'][0]['status'] == 'running'
-    # Explicit failures can still settle the run and retain feedback for a human retry.
-    bridge.complete(run['id'], session, error='Unable to reconcile delivery')
-    assert service.get_task(task['id'])['runs'][0]['status'] == 'failed'
-
-
-@pytest.mark.parametrize('claimed', [False, True])
-def test_human_pause_revokes_steering_without_replaying_comments(service, claimed):
-    bridge, task, run, session = attached(service)
-    comment = service.add_comment(task['id'], 'Additional requirement')
-    if claimed:
-        bridge.steering(run['id'])
+def test_human_pause_does_not_replay_pending_comments(service):
+    task, run = attached(service)
+    service.add_comment(task['id'], 'Additional requirement')
     service.request_input(task['id'], 'Human paused work')
-    with pytest.raises(DomainError):
-        bridge.steering(run['id'])
-    with pytest.raises(DomainError):
-        bridge.steered(run['id'], session, comment['id'])
-    bridge.complete(run['id'], session)
+    service.finish_run(run['id'])
     assert service.claim_next() is None
-
-
-def test_steering_api_roundtrip_and_wrong_chat(client):
-    service = client.app.state.service
-    bridge, task, run, session = attached(service)
-    comment = service.add_comment(task['id'], 'API feedback')
-    path = f'/api/desktop/runs/{run["id"]}'
-    result = client.post(path + '/steering', json={})
-    assert result.status_code == 200 and result.json()['session_id'] == session
-    assert client.post(path + '/steered', json={
-        'thread_id': str(uuid4()), 'comment_id': comment['id']}).status_code == 409
-    assert client.post(path + '/steered', json={
-        'thread_id': session, 'comment_id': comment['id']}).json() == {'delivered': True}
+    assert service.pending_inputs(run['id']) == []

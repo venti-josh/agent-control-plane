@@ -19,7 +19,7 @@ class Text(HTMLParser):
         self.parts.append(data)
 
 
-def render(state, outcome, started=True):
+def render(state, outcome, started=True, extra=None):
     script = """
 const fs = require('fs'), vm = require('vm');
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -37,17 +37,16 @@ selected = {id:'task', title:'Recovered task', description:'', provider:'codex',
   state:input.state, comments:[], artifacts:[], runs:[{id:'run', status:input.outcome,
   trigger:'todo', created_at:1700000000, started_at:input.started ? 1700000001 : null,
   finished_at:['running','queued'].includes(input.outcome) ? null : 1700000060,
-  error: input.outcome === 'failed' ? 'Historical <timeout>' : null,
-  desktop: input.outcome === 'running' ? {phase:'dispatched'} : null}]};
+  error: input.outcome === 'failed' ? 'Historical <timeout>' : null}], ...input.extra};
 tasks = [{...selected, run_status:input.outcome, run_started_at:selected.runs[0].started_at}];
 drawBoard(); drawTask();
 `, context);
-process.stdout.write(JSON.stringify({board:nodes.board.innerHTML,
+process.stdout.write(JSON.stringify({board:nodes.board.innerHTML, summary:nodes['task-summary'].innerHTML,
   history:nodes['task-runs'].innerHTML,
   outcome:vm.runInContext('selected.runs[0].status',context)}));
 """
     result = subprocess.run(['node', '-e', script], input=json.dumps({
-        'state': state, 'outcome': outcome, 'started': started,
+        'state': state, 'outcome': outcome, 'started': started, 'extra': extra or {},
         'states': [{'id': s, 'label': label} for s, label in zip(STATES, LABELS)],
     }), text=True, capture_output=True, cwd=Path(__file__).parents[1], check=True)
     return json.loads(result.stdout)
@@ -79,9 +78,24 @@ def test_failed_run_stays_dated_and_labeled_in_history():
     assert result['outcome'] == 'failed'
 
 
-@pytest.mark.parametrize('started,label', [(False, 'Awaiting dispatcher'), (True, 'running')])
-def test_active_run_is_distinguished_from_history(started, label):
+@pytest.mark.parametrize('started', [False, True])
+def test_active_run_is_distinguished_from_history(started):
     result = render('in_progress' if started else 'todo', 'running', started)
-    assert 'Current run: ' + label in result['history']
+    assert 'Current run: running' in result['history']
     assert 'Past run:' not in result['history']
     assert 'Finished:' not in result['history']
+
+
+def test_codex_approval_blocker_offers_decision_buttons():
+    blocker = {'id': 'q', 'body': 'Codex asks to run a command: <rm>', 'author': 'agent',
+               'in_reply_to': None, 'created_at': 1700000002}
+    result = render('waiting_on_input', 'running', extra={
+        'comments': [blocker], 'blocker_comment_id': 'q',
+        'approval': {'id': 'a', 'method': 'item/commandExecution/requestApproval',
+                     'decisions': ['accept', 'accept for session', 'decline']}})
+    assert 'Codex needs your approval' in result['summary']
+    for decision in ('accept', 'accept for session', 'decline'):
+        assert f'data-decision="{decision}"' in result['summary']
+    assert '&lt;rm&gt;' in result['summary'] and '<rm>' not in result['summary']
+    plain = render('waiting_on_input', 'succeeded', extra={'comments': [blocker], 'blocker_comment_id': 'q'})
+    assert 'Waiting on your input' in plain['summary'] and 'data-decision' not in plain['summary']

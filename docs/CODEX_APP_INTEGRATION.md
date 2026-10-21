@@ -1,5 +1,12 @@
 # Codex app integration feasibility
 
+> **Superseded 2026-10-21.** The dispatcher route below ("Supported integration
+> shape" onward: `codex queue`, the dispatcher chat, `acp desktop` callbacks,
+> steering through the app's message tool) was removed. ACP now drives Codex
+> through the app-server JSON-RPC protocol with approvals answered on the board;
+> see README "Codex runs and approvals" and the 2026-10-21 notes at the end.
+> The 2026-10-17 probe results are kept as history.
+
 Verified locally on 2026-10-17 with `codex-cli 0.162.0-alpha.17.2` and the
 running ChatGPT desktop app's Codex surface. The probes below led to the local implementation described in README.
 This integration is included in v0.1.2; v0.1.1 uses CLI execution.
@@ -139,3 +146,43 @@ duplicate and bot/edit/mirror filtering, same-chat continuation, CLI fallback,
 deleted comments, wrong-chat acknowledgements, cancellation/human pause, stale
 results, uncertain delivery, and the HTTP endpoints. Independent read-only review
 found no actionable issues and separately ran 30 desktop/steering tests.
+
+
+## App-server runner probes — 2026-10-21
+
+Codex CLI 0.154.0 (Homebrew); ChatGPT app bundling codex 0.163.0-alpha.10.2.
+
+- `thread/start.config` accepts the dotted `mcp_servers.acp.*` and
+  `sandbox_workspace_write.*` overrides, so per-thread MCP env works without `-c`
+  flags, including on a shared server.
+- `approvalPolicy: "on-request"` with the workspace-write sandbox: a write outside
+  the workspace made Codex escalate, producing `item/commandExecution/requestApproval`
+  (command, cwd, reason, `availableDecisions`). `decline` and `acceptForSession`
+  are accepted although 0.154 lists only `accept`, an execpolicy amendment and
+  `cancel`. A write under a symlinked cwd (`/tmp` vs `/private/tmp`) produced
+  `item/fileChange/requestApproval`; ACP passes the resolved path.
+- `approvalsReviewer: "auto_review"` never reaches the client: Codex emits
+  `item/autoApprovalReview/started|completed` with risk level and rationale, plus
+  a `guardianWarning`, and runs a hidden guardian subagent thread.
+- `thread/resume` + `turn/start` from a new process continued the thread for an
+  answer and a change request; `turn/steer` mid-turn arrived as a user message and
+  was honored; `turn/interrupt` completed the turn as `interrupted` within a second.
+- The daemon (`codex app-server daemon start`) requires the standalone Codex
+  install; the Homebrew CLI refuses. `codex app-server --listen unix://` serves the
+  same control socket, which speaks WebSocket over the Unix socket (raw JSON lines
+  get no reply). `codex app-server proxy` only pipes bytes. ACP's small WebSocket
+  client ran a full turn with an approval over it, and the thread stayed loaded
+  (`thread/loaded/list`) after ACP disconnected.
+- Threads carry `originator: "acp"` and `source: "vscode"`, like the app's own.
+  The app's bundled 0.163-alpha binary lists and reads threads written by 0.154
+  (name and all turns). The app runs its own server, so it does not see an ACP
+  run live.
+- The app lists threads by server-owned project. In 0.163 (experimental API:
+  `initialize.capabilities.experimentalApi`) `project/list` returns the app's
+  projects and `thread/start` takes `projectId`. A thread started that way in
+  `email_parsing` appeared under that project at once and opened. A 0.154 thread
+  (no project support) in the same folder did not show in the project list at
+  first, but the owner later opened it in the app.
+- A user MCP helper spawned into the app-server's process group (Codex Computer
+  Use) refused SIGKILL while exiting; ACP now closes stdin first and lets the
+  server shut down before signalling the group.

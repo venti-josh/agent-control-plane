@@ -80,27 +80,6 @@ def test_failed_command_does_not_consume_key(client):
     assert client.post('/api/tasks', json={'title': 'Valid'}, headers=headers).status_code == 201
 
 
-def test_desktop_review_receipt_replays_after_acknowledgement(client):
-    from acp.desktop import DesktopBridge
-    from uuid import uuid4
-    service = client.app.state.service
-    bridge = DesktopBridge(service)
-    task = service.create_task('Desktop', provider='codex', state='todo', repo_path='/tmp')
-    run = service.claim_next(); bridge.dispatch(run['id']); bridge.claim(run['id'])
-    thread = str(uuid4()); bridge.started(run['id'], thread)
-    path = '/api/desktop/runs/' + run['id'] + '/action'
-    body = {'thread_id': thread, 'action': 'review', 'text': 'Verified once'}
-    headers = {'Idempotency-Key': 'desktop-review'}
-    first = client.post(path, json=body, headers=headers)
-    bridge.complete(run['id'], thread)
-    replay = client.post(path, json=body, headers=headers)
-    assert replay.status_code == 200
-    assert replay.json() == first.json()
-    assert len(service.get_task(task['id'])['artifacts']) == 1
-    body['thread_id'] = str(uuid4())
-    assert client.post(path, json=body, headers=headers).status_code == 409
-
-
 def test_cli_retries_lost_reply_with_same_receipt(client, monkeypatch):
     import httpx
     from acp import cli
