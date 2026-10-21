@@ -9,7 +9,7 @@ import httpx
 
 from .integrations import Integrations
 from .runners import CLIRunner, DemoRunner
-from .desktop import DesktopRunner
+from .codex_app_server import CodexRunner
 from .service import TaskService
 from .store import row
 from .retries import retry_delay
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class Worker:
     def __init__(self, service: TaskService, runners: dict | None = None):
         self.service, self.settings = service, service.settings
-        self.runners = runners or {"claude": CLIRunner(), "codex": DesktopRunner(), "demo": DemoRunner()}
+        self.runners = runners or {"claude": CLIRunner(), "codex": CodexRunner(), "demo": DemoRunner()}
         self.tasks: list[asyncio.Task] = []
         self.lock = None
         self.last_error: str | None = None
@@ -33,10 +33,9 @@ class Worker:
             self.lock.close()
             self.lock = None
             raise RuntimeError("Another ACP worker is already using this database; run one server worker only.")
-        retained = self.service.recover()
-        self.tasks = [asyncio.create_task(self.run_loop(retained[i] if i < len(retained) else None),
-                                         name=f"agent-slot-{i}")
-                      for i in range(max(self.settings.max_concurrent_runs, len(retained)))]
+        self.service.recover()
+        self.tasks = [asyncio.create_task(self.run_loop(), name=f"agent-slot-{i}")
+                      for i in range(self.settings.max_concurrent_runs)]
         self.tasks.append(asyncio.create_task(self.delivery_loop(), name="event-deliveries"))
 
     async def stop(self) -> None:
@@ -49,16 +48,15 @@ class Worker:
             self.lock.close()
             self.lock = None
 
-    async def run_once(self, retained=None) -> bool:
-        run = retained or self.service.claim_next()
+    async def run_once(self) -> bool:
+        run = self.service.claim_next()
         if not run:
             return False
         task = self.service.get_task(run["task_id"])
         try:
             await self.runners[task["provider"]].run(self.service, task, run)
         except asyncio.CancelledError:
-            if not self.service.resumable_desktop(run["id"]):
-                self.service.finish_run(run["id"], "interrupted", "Server stopped. Review the retained worktree and retry.")
+            self.service.finish_run(run["id"], "interrupted", "Server stopped. Review the retained worktree and retry.")
             raise
         except Exception as exc:
             logger.exception("Run %s failed", run["id"])
@@ -67,9 +65,7 @@ class Worker:
             self.service.finish_run(run["id"])
         return True
 
-    async def run_loop(self, retained=None) -> None:
-        if retained:
-            await self.run_once(retained)
+    async def run_loop(self) -> None:
         while True:
             try:
                 worked = await self.run_once()

@@ -38,6 +38,8 @@ class Settings:
     codex_command: str = "codex"
     claude_model: str = ""
     codex_model: str = ""
+    codex_approvals: str = "acp"  # acp | auto_review | never
+    codex_run_mode: str = ""  # app-server | exec; empty probes `codex app-server` once
     linear_api_key: str = ""
     linear_workspace_id: str = ""
     linear_team_id: str = ""
@@ -77,6 +79,10 @@ class Settings:
             raise ValueError(f"DEFAULT_PROVIDER must be one of {PROVIDERS}")
         if self.max_concurrent_runs < 1 or self.run_timeout_seconds <= 0 or self.poll_seconds <= 0:
             raise ValueError("Concurrency, timeouts and polling interval must be positive")
+        if self.codex_approvals not in {"acp", "auto_review", "never"}:
+            raise ValueError("CODEX_APPROVALS must be acp, auto_review, or never")
+        if self.codex_run_mode not in {"", "app-server", "exec"}:
+            raise ValueError("CODEX_RUN_MODE must be app-server or exec")
         if self.linear_states:
             if set(self.linear_states) != set(STATES):
                 raise ValueError("LINEAR_STATES_JSON must map all seven internal state names to Linear state IDs")
@@ -110,6 +116,8 @@ class Settings:
             codex_command=getenv("CODEX_COMMAND", "codex"),
             claude_model=getenv("CLAUDE_MODEL", ""),
             codex_model=getenv("CODEX_MODEL", ""),
+            codex_approvals=getenv("CODEX_APPROVALS", "acp"),
+            codex_run_mode=getenv("CODEX_RUN_MODE", ""),
             linear_api_key=getenv("LINEAR_API_KEY", ""),
             linear_workspace_id=getenv("LINEAR_WORKSPACE_ID", ""),
             linear_team_id=getenv("LINEAR_TEAM_ID", ""),

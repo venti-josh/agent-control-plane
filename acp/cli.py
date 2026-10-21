@@ -21,9 +21,7 @@ def request(base: str, method: str, path: str, data: dict | None = None,
             idempotency_key: str | None = None):
     mutation = method == 'POST' and (path == '/api/tasks' or
         (path.startswith('/api/tasks/') and path.rsplit('/', 1)[-1] in
-         {'comments', 'request-input', 'submit-for-review', 'request-changes'}) or
-        (path.startswith('/api/desktop/runs/') and path.endswith('/action') and
-         (data or {}).get('action') in {'comment', 'input', 'review'}))
+         {'comments', 'request-input', 'submit-for-review', 'request-changes'}))
     command = PendingCommand(base, method, path, data, idempotency_key) if mutation else None
     try:
         result = _request(base, method, path, data, command.key if command else None)
@@ -166,34 +164,8 @@ def main() -> None:
     osub.add_parser('build', help='Compile Comet if its source changed (the installer does this on macOS)')
     for name in ['status', 'show', 'hide', 'toggle', 'reset', 'stop']:
         osub.add_parser(name)
-    desktop = sub.add_parser('desktop', help='Connect and operate the supported Codex app dispatcher')
-    desktop.add_argument('--url', help='ACP local service URL')
-    ds = desktop.add_subparsers(dest='desktop_command', required=True)
-    ds.add_parser('status')
-    ds.add_parser('instructions')
-    ds.add_parser('disconnect')
-    connect = ds.add_parser('connect')
-    connect.add_argument('--thread', required=True)
-    for name in ('claim', 'prepare', 'bind', 'started', 'complete', 'acknowledge', 'action',
-                 'steering', 'steered', 'recover'):
-        item = ds.add_parser(name)
-        item.add_argument('run_id')
-        if name in ('bind', 'started', 'complete', 'acknowledge', 'action', 'steered'):
-            item.add_argument('--thread', default=None)
-        if name == 'steered':
-            item.add_argument('--comment-id', required=True)
-        if name == 'prepare':
-            item.add_argument('--repo', default='')
-        if name in {'complete', 'acknowledge'}:
-            item.add_argument('--error', default='')
-        if name == 'action':
-            item.add_argument('action', choices=['get', 'comment', 'input', 'review', 'activity'])
-            item.add_argument('--text', default='')
-            item.add_argument('--output-url', default='')
-            item.add_argument('--kind', choices=['text', 'file', 'url', 'pr'], default='text')
     for command in (create, comment, answer, changes):
         command.add_argument('--request-id', help='Reuse this ID when retrying the same logical command')
-    ds.choices['action'].add_argument('--request-id', help='Reuse for retries of this task action')
     args = parser.parse_args()
     try:
         from . import daemon
@@ -237,33 +209,6 @@ def main() -> None:
                 result = getattr(overlay, args.overlay_command)(settings)
             else:
                 result = overlay.control(settings, args.overlay_command)
-            print(json.dumps(result, indent=2))
-            return
-        if args.command == 'desktop':
-            base = args.url or daemon.status(settings).get('url') or settings.base_url
-            action = args.desktop_command
-            if action in {'status', 'instructions'}:
-                result = request(base, 'GET', '/api/desktop')
-                print(result['instructions'] if action == 'instructions' else json.dumps(result, indent=2))
-                return
-            if action in {'connect', 'disconnect'}:
-                result = request(base, 'POST', '/api/desktop/connection',
-                                 {'thread_id': args.thread if action == 'connect' else None})
-            else:
-                payload = {}
-                if action in {'bind', 'started', 'action', 'complete', 'acknowledge', 'steered'}:
-                    payload['thread_id'] = args.thread or (os.getenv('CODEX_THREAD_ID', '')
-                                                          if action in {'started', 'action'} else '')
-                if action == 'steered':
-                    payload['comment_id'] = args.comment_id
-                if action == 'prepare':
-                    payload['repo'] = args.repo
-                if action in {'complete', 'acknowledge'}:
-                    payload['error'] = args.error
-                if action == 'action':
-                    payload.update(action=args.action, text=args.text, output_url=args.output_url, kind=args.kind)
-                result = request(base, 'POST', f'/api/desktop/runs/{args.run_id}/{action}', payload,
-                                 idempotency_key=getattr(args, 'request_id', None))
             print(json.dumps(result, indent=2))
             return
         if args.command in {"start", "stop", "status", "open", "logs"}:

@@ -25,6 +25,8 @@ TRANSITIONS = {
     "done": {"planning", "todo"},
 }
 PR_PATTERN = re.compile(r"^https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)/?$")
+# Answers to a Codex approval blocker. Anything else declines and is forwarded as steering.
+DECISIONS = {"accept": "accept", "accept for session": "acceptForSession", "decline": "decline"}
 
 
 class DomainError(Exception):
@@ -158,16 +160,17 @@ class TaskService:
         if task['hidden'] or task['state'] not in {'todo', 'in_progress', 'waiting_on_input', 'ready_for_review'}:
             return
         if task['state'] == 'in_progress':
-            active = db.execute(
-                "SELECT r.id FROM runs r JOIN desktop_runs d ON d.run_id=r.id "
-                "WHERE r.task_id=? AND r.status='running' AND r.stop_requested=0 "
-                "AND d.phase='attached' AND d.thread_id IS NOT NULL", (task['id'],)).fetchone()
+            # A live app-server turn takes the comment as steering instead of a second run.
+            active = db.execute("SELECT id FROM runs WHERE task_id=? AND status='running' "
+                                "AND stop_requested=0 AND steerable=1", (task['id'],)).fetchone()
             if active:
-                db.execute('INSERT OR IGNORE INTO desktop_inputs(comment_id,run_id) VALUES(?,?)',
+                db.execute('INSERT OR IGNORE INTO run_inputs(comment_id,run_id) VALUES(?,?)',
                            (comment['id'], active['id']))
                 self._event(db, 'run.input_pending', task['id'],
                             {'run_id': active['id'], 'comment_id': comment['id']})
                 return
+        if task['state'] == 'waiting_on_input' and self._answer_approval(db, task, comment):
+            return
         trigger = 'input' if task['state'] == 'waiting_on_input' else 'comment'
         self._schedule(db, task['id'], trigger, {'comment_id': comment['id']})
 
@@ -183,11 +186,9 @@ class TaskService:
             raise DomainError("Task changed since you opened it. Refresh and try again.")
         self._check_run(db, task, run_id)
         if run_id and state in {'waiting_on_input', 'ready_for_review'} and db.execute(
-                "SELECT 1 FROM desktop_inputs i JOIN comments c ON c.id=i.comment_id "
-                "WHERE i.run_id=? AND (i.status='claimed' OR (i.status='pending' AND c.deleted=0))",
-                (run_id,)).fetchone():
-            raise DomainError('New comments are awaiting dispatcher delivery. Incorporate them before pausing; '
-                              'retry after the dispatcher confirms delivery.')
+                "SELECT 1 FROM run_inputs i JOIN comments c ON c.id=i.comment_id "
+                "WHERE i.run_id=? AND i.status='pending' AND c.deleted=0", (run_id,)).fetchone():
+            raise DomainError('New comments are being delivered to you. Incorporate them, then retry.')
         if task["state"] == state:
             return task
         if state not in TRANSITIONS[task["state"]]:
@@ -266,15 +267,16 @@ class TaskService:
                 "SELECT * FROM runs WHERE task_id=? ORDER BY created_at DESC", (task_id,))]
             for run in task["runs"]:
                 run["inputs"] = json.loads(run["inputs"])
-                run["desktop"] = row(db.execute('SELECT * FROM desktop_runs WHERE run_id=?',
-                                                 (run['id'],)).fetchone())
+            approval = row(db.execute("SELECT id,request FROM approvals WHERE comment_id=? AND status='pending'",
+                                      (task["blocker_comment_id"] or '',)).fetchone())
+            task["approval"] = approval and {"id": approval["id"], "method": json.loads(approval["request"])["method"],
+                                             "decisions": list(DECISIONS)}
             return task
 
     def list_tasks(self) -> list[dict]:
-        return self.store.all("SELECT t.*, r.status AS run_status, r.started_at AS run_started_at, "
-                              "d.phase AS desktop_phase FROM tasks t LEFT JOIN runs r ON r.id="
+        return self.store.all("SELECT t.*, r.status AS run_status, r.started_at AS run_started_at "
+                              "FROM tasks t LEFT JOIN runs r ON r.id="
                               "(SELECT id FROM runs WHERE task_id=t.id ORDER BY created_at DESC LIMIT 1) "
-                              "LEFT JOIN desktop_runs d ON d.run_id=r.id "
                               "WHERE t.hidden=0 ORDER BY t.created_at DESC")
 
     def move_task(self, task_id: str, state: str, comment: str | None = None,
@@ -296,9 +298,6 @@ class TaskService:
             if description is not None:
                 values["description"] = description
             if provider is not None or repo_path is not None:
-                if db.execute("SELECT 1 FROM desktop_runs d JOIN runs r ON r.id=d.run_id "
-                              "WHERE r.task_id=? AND d.phase IN ('claimed','attached')", (task_id,)).fetchone():
-                    raise DomainError("A desktop run is still unacknowledged; finish or stop it in Codex first")
                 if db.execute("SELECT 1 FROM runs WHERE task_id=? AND status IN ('running','queued')",
                               (task_id,)).fetchone():
                     raise DomainError("Stop queued/running work before changing its agent or repository")
@@ -429,9 +428,6 @@ class TaskService:
             task = self._task(db, task_id)
             if db.execute("SELECT 1 FROM runs WHERE task_id=? AND status IN ('running','queued')", (task_id,)).fetchone():
                 raise DomainError("Stop work before resetting the session")
-            if db.execute("SELECT 1 FROM desktop_runs d JOIN runs r ON r.id=d.run_id "
-                          "WHERE r.task_id=? AND d.phase IN ('claimed','attached')", (task_id,)).fetchone():
-                raise DomainError("The app run is still unacknowledged. Stop it in Codex and acknowledge completion first.")
             db.execute("UPDATE tasks SET session_id=NULL WHERE id=?", (task_id,))
             self._event(db, "session.reset", task_id, {}, "api")
             return self._task(db, task["id"])
@@ -452,9 +448,6 @@ class TaskService:
             run = row(db.execute("SELECT r.* FROM runs r JOIN tasks t ON t.id=r.task_id WHERE r.status='queued' "
                                  "AND t.hidden=0 AND t.state IN ('todo','waiting_on_input','ready_for_review','in_progress') "
                                  "AND NOT EXISTS(SELECT 1 FROM runs x WHERE x.task_id=r.task_id AND x.status='running') "
-                                 "AND NOT (t.provider='codex' AND EXISTS(SELECT 1 FROM metadata WHERE key='codex_dispatcher') "
-                                 "AND EXISTS(SELECT 1 FROM runs x JOIN tasks y ON y.id=x.task_id "
-                                 "WHERE x.status='running' AND y.provider='codex')) "
                                  "ORDER BY r.created_at LIMIT 1").fetchone())
             if not run:
                 return None
@@ -503,6 +496,17 @@ class TaskService:
         db.execute('UPDATE subagent_activity SET finished_at=? WHERE run_id=? AND finished_at IS NULL',
                    (time.time(), run_id))
         self._event(db, f"run.{status}", task["id"], {"run_id": run_id, "error": error})
+        db.execute("UPDATE approvals SET status='cancelled' WHERE run_id=? AND status IN ('pending','answered')",
+                   (run_id,))
+        # Steering the turn never received becomes a follow-up, like any comment on a busy task.
+        undelivered = [r[0] for r in db.execute(
+            "SELECT i.comment_id FROM run_inputs i JOIN comments c ON c.id=i.comment_id "
+            "WHERE i.run_id=? AND i.status='pending' AND c.deleted=0 ORDER BY c.created_at", (run_id,))]
+        db.execute("DELETE FROM run_inputs WHERE run_id=? AND status='pending'", (run_id,))
+        task = self._task(db, task["id"])
+        if status == "succeeded" and not task['hidden'] and task["state"] in {"waiting_on_input", "ready_for_review"}:
+            for comment_id in undelivered:
+                self._schedule(db, task["id"], "comment", {"comment_id": comment_id})
         if error:
             db.execute("UPDATE tasks SET last_error=? WHERE id=?", (error, task["id"]))
             if task["state"] in {"in_progress", "todo", "ready_for_review"}:
@@ -514,32 +518,97 @@ class TaskService:
                 db.execute("UPDATE runs SET status='cancelled',finished_at=? WHERE id=?", (time.time(), queued[0]))
                 self._event(db, "run.cancelled", task["id"], {"run_id": queued[0], "reason": "Previous run failed"})
 
+    def _answer_approval(self, db, task: dict, comment: dict) -> bool:
+        """Resolve a pending Codex approval from the human answer to its blocker."""
+        approval = row(db.execute("SELECT a.* FROM approvals a JOIN runs r ON r.id=a.run_id "
+                                  "WHERE a.comment_id=? AND a.status='pending' AND r.status='running' "
+                                  "AND r.stop_requested=0", (task['blocker_comment_id'] or '',)).fetchone())
+        if not approval:
+            return False
+        decision = DECISIONS.get(' '.join(comment['body'].lower().strip().rstrip('.!').split()))
+        db.execute("UPDATE approvals SET decision=?,status='answered' WHERE id=?",
+                   (decision or 'decline', approval['id']))
+        if not decision:
+            db.execute('INSERT OR IGNORE INTO run_inputs(comment_id,run_id) VALUES(?,?)',
+                       (comment['id'], approval['run_id']))
+        self._event(db, 'approval.answered', task['id'], {'run_id': approval['run_id'],
+                    'approval_id': approval['id'], 'decision': decision or 'decline'})
+        self._resume_run(db, task, approval['run_id'])
+        return True
 
-    def resumable_desktop(self, run_id):
-        return self.store.one("SELECT r.* FROM runs r JOIN desktop_runs d ON d.run_id=r.id "
-                              "JOIN tasks t ON t.id=r.task_id WHERE r.id=? AND r.status='running' "
-                              "AND r.stop_requested=0 AND t.hidden=0 AND t.provider='codex'", (run_id,))
+    def _resume_run(self, db, task: dict, run_id: str) -> None:
+        # The run never stopped; leaving Waiting on Input must not end its activity interval.
+        self._move(db, task, 'in_progress', 'system', internal=True)
+        db.execute('UPDATE runs SET activity_finished_at=NULL WHERE id=?', (run_id,))
 
-    def recover(self) -> list[dict]:
-        desktop = []
+    def approval_resolved_elsewhere(self, approval_id: str) -> None:
+        """Another client of a shared app-server answered the request (e.g. the Codex app)."""
+        with self.store.transaction() as db:
+            approval = row(db.execute("SELECT * FROM approvals WHERE id=? AND status IN ('pending','answered')",
+                                      (approval_id,)).fetchone())
+            if not approval:
+                return
+            db.execute("UPDATE approvals SET status='resolved' WHERE id=?", (approval_id,))
+            run = row(db.execute("SELECT * FROM runs WHERE id=?", (approval['run_id'],)).fetchone())
+            task = self._task(db, run['task_id'])
+            if task['state'] == 'waiting_on_input' and task['blocker_comment_id'] == approval['comment_id']:
+                self._comment(db, task['id'], 'Answered outside ACP.', 'system', 'system',
+                              in_reply_to=approval['comment_id'])
+                self._resume_run(db, task, run['id'])
+
+    def request_approval(self, run_id: str, request: dict, question: str) -> str:
+        """Park a live run on a Codex approval request: the task waits on a blocker comment."""
+        with self.store.transaction() as db:
+            run = row(db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone())
+            task = self._task(db, run['task_id']) if run else None
+            self._check_run(db, task or {'id': ''}, run_id)
+            # Not the agent pausing: the run stays live, so pending steering need not block it.
+            blocker = self._comment(db, task['id'], question, 'agent', 'agent')
+            self._move(db, task, 'waiting_on_input', 'agent', internal=True, blocker_comment_id=blocker['id'])
+            approval_id = str(uuid4())
+            db.execute("INSERT INTO approvals VALUES(?,?,?,?,NULL,'pending',?)",
+                       (approval_id, run_id, blocker['id'], encode(request), time.time()))
+            return approval_id
+
+    def answered_approvals(self, run_id: str) -> list[dict]:
+        return self.store.all("SELECT * FROM approvals WHERE run_id=? AND status='answered'", (run_id,))
+
+    def settle_approval(self, approval_id: str, status: str = 'resolved') -> None:
+        with self.store.transaction() as db:
+            db.execute("UPDATE approvals SET status=? WHERE id=? AND status IN ('pending','answered')",
+                       (status, approval_id))
+
+    def pending_inputs(self, run_id: str) -> list[dict]:
+        return self.store.all("SELECT c.* FROM run_inputs i JOIN comments c ON c.id=i.comment_id "
+                              "WHERE i.run_id=? AND i.status='pending' AND c.deleted=0 ORDER BY c.created_at",
+                              (run_id,))
+
+    def input_delivered(self, comment_id: str) -> None:
+        with self.store.transaction() as db:
+            db.execute("UPDATE run_inputs SET status='delivered' WHERE comment_id=?", (comment_id,))
+
+    def defer_input(self, comment_id: str) -> None:
+        """Steering failed: queue the comment as a follow-up so the agent can still report."""
+        with self.store.transaction() as db:
+            pending = row(db.execute("SELECT i.run_id,c.task_id FROM run_inputs i JOIN comments c ON c.id=i.comment_id "
+                                     "WHERE i.comment_id=? AND i.status='pending'", (comment_id,)).fetchone())
+            if not pending:
+                return
+            db.execute("DELETE FROM run_inputs WHERE comment_id=?", (comment_id,))
+            if self._task(db, pending['task_id'])['state'] in {'todo', 'in_progress', 'waiting_on_input', 'ready_for_review'}:
+                self._schedule(db, pending['task_id'], 'comment', {'comment_id': comment_id})
+
+    def mark_steerable(self, run_id: str) -> None:
+        with self.store.transaction() as db:
+            db.execute("UPDATE runs SET steerable=1 WHERE id=?", (run_id,))
+
+    def recover(self) -> None:
         for run in self.store.all("SELECT id FROM runs WHERE status='running'"):
-            retained = self.resumable_desktop(run['id'])
-            if retained:
-                with self.store.transaction() as db:
-                    db.execute("UPDATE desktop_runs SET queue_error=CASE WHEN queue_inflight=1 "
-                               "THEN 'Delivery interrupted; outcome unknown' ELSE queue_error END, "
-                               "next_attempt_at=CASE WHEN queue_inflight=1 AND delivery_attempts<3 "
-                               "THEN ? ELSE next_attempt_at END, queue_inflight=0 WHERE run_id=?",
-                               (time.time() + 1, run['id']))
-                retained['inputs'] = json.loads(retained['inputs'])
-                desktop.append(retained)
-            else:
-                self.finish_run(run["id"], "interrupted",
-                                "The server stopped during this run. Its session and worktree are retained. "
-                                "Check the log and retry when ready; the task was not automatically rerun.")
+            self.finish_run(run["id"], "interrupted",
+                            "The server stopped during this run. Its session and worktree are retained. "
+                            "Check the log and retry when ready; the task was not automatically rerun.")
         with self.store.transaction() as db:
             db.execute("UPDATE outbox SET status='pending' WHERE status='working'")
-        return desktop
 
     def subscribe(self, url: str, types: list[str], secret: str = "") -> dict:
         if urlparse(url).scheme not in {"http", "https"} or not urlparse(url).hostname:

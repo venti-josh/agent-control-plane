@@ -37,11 +37,6 @@
       <p id="agents-status" class="hint"></p>
       <details><summary>Change agents</summary><p class="hint">Set <code>DEFAULT_PROVIDER</code>, <code>CLAUDE_COMMAND</code>, and <code>CODEX_COMMAND</code> in <code>config.env</code> (<code>acp setup</code> prints its location), then restart with <code>acp stop</code> and <code>acp start</code>.</p></details>
     </section>
-    <section>
-      <div class="connection-heading"><h3>Codex app</h3><span id="desktop-badge" class="chip">CLI mode</span></div>
-      <p id="desktop-status" class="hint"></p>
-      <details><summary>Connection details</summary><p id="desktop-help" class="hint"></p><div class="settings-actions"><button id="desktop-copy" type="button">Copy setup prompt</button><button id="desktop-disconnect" type="button" class="quiet" hidden>Disconnect</button></div><form id="desktop-connect-form"><label>Dispatcher chat ID<input id="desktop-thread" required placeholder="Chat UUID"></label><button type="submit">Connect</button></form><textarea id="desktop-instructions" readonly rows="5" aria-label="Codex setup prompt"></textarea></details>
-    </section>
     <section class="linear-connection">
       <div class="connection-heading"><h3>Linear</h3><span id="linear-badge" class="chip">Not connected</span></div>
       <p id="linear-status" class="hint" role="status"></p><p id="linear-error" class="hint" role="alert" hidden></p>

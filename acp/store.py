@@ -125,15 +125,19 @@ CREATE TABLE IF NOT EXISTS receipts (
     created_at REAL NOT NULL,
     PRIMARY KEY(source,id)
 );
-CREATE TABLE IF NOT EXISTS desktop_runs (
-    run_id TEXT PRIMARY KEY REFERENCES runs(id),
-    phase TEXT NOT NULL CHECK(phase IN ('dispatched','claimed','attached','complete')),
-    thread_id TEXT
-);
-CREATE TABLE IF NOT EXISTS desktop_inputs (
+CREATE TABLE IF NOT EXISTS run_inputs (
     comment_id TEXT PRIMARY KEY REFERENCES comments(id),
     run_id TEXT NOT NULL REFERENCES runs(id),
-    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','claimed','delivered'))
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','delivered'))
+);
+CREATE TABLE IF NOT EXISTS approvals (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(id),
+    comment_id TEXT NOT NULL REFERENCES comments(id),
+    request TEXT NOT NULL,
+    decision TEXT,
+    status TEXT NOT NULL CHECK(status IN ('pending','answered','resolved','cancelled')),
+    created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
@@ -156,19 +160,17 @@ class Store:
             run_columns = {r['name'] for r in db.execute('PRAGMA table_info(runs)')}
             if 'activity_finished_at' not in run_columns:
                 db.execute('ALTER TABLE runs ADD COLUMN activity_finished_at REAL')
-            desktop_columns = {r['name'] for r in db.execute('PRAGMA table_info(desktop_runs)')}
-            for name in ('dispatched_at', 'queue_accepted_at', 'claimed_at', 'delayed_at', 'recovery_at', 'ack_delayed_at'):
-                if name not in desktop_columns:
-                    db.execute(f'ALTER TABLE desktop_runs ADD COLUMN {name} REAL')
-            if 'send_started_at' not in desktop_columns:
-                db.execute('ALTER TABLE desktop_runs ADD COLUMN send_started_at REAL')
-                # Old claimed handoffs may already have sent their prompt. Never grant another send.
-                db.execute("UPDATE desktop_runs SET send_started_at=coalesce(claimed_at,0) WHERE phase='claimed'")
-            for name, kind in [('delivery_attempts', 'INTEGER NOT NULL DEFAULT 0'),
-                               ('queue_inflight', 'INTEGER NOT NULL DEFAULT 0'),
-                               ('queue_error', 'TEXT'), ('next_attempt_at', 'REAL')]:
-                if name not in desktop_columns:
-                    db.execute(f'ALTER TABLE desktop_runs ADD COLUMN {name} {kind}')
+            if 'steerable' not in run_columns:
+                db.execute('ALTER TABLE runs ADD COLUMN steerable INTEGER NOT NULL DEFAULT 0')
+            tables = {r['name'] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if 'desktop_runs' in tables:
+                # The Codex app dispatcher is gone. Its task chats belong to the app, so tasks
+                # bound to one start a fresh app-server thread on their next run.
+                db.execute('UPDATE tasks SET session_id=NULL WHERE session_id IN '
+                           '(SELECT thread_id FROM desktop_runs WHERE thread_id IS NOT NULL)')
+                db.execute('DROP TABLE IF EXISTS desktop_inputs')
+                db.execute('DROP TABLE desktop_runs')
+                db.execute("DELETE FROM metadata WHERE key='codex_dispatcher'")
             child_columns = {r['name'] for r in db.execute('PRAGMA table_info(subagent_activity)')}
             if 'state' not in child_columns:
                 db.execute("ALTER TABLE subagent_activity ADD COLUMN state TEXT NOT NULL DEFAULT 'running'")
