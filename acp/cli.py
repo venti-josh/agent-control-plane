@@ -163,6 +163,7 @@ def main() -> None:
     osub = overlay.add_subparsers(dest='overlay_command', required=True)
     ostart = osub.add_parser('start')
     ostart.add_argument('--url', default='', help='Local ACP origin (normally discovered automatically)')
+    osub.add_parser('build', help='Compile Comet if its source changed (the installer does this on macOS)')
     for name in ['status', 'show', 'hide', 'toggle', 'reset', 'stop']:
         osub.add_parser(name)
     desktop = sub.add_parser('desktop', help='Connect and operate the supported Codex app dispatcher')
@@ -232,7 +233,7 @@ def main() -> None:
             from . import overlay
             if args.overlay_command == 'start':
                 result = overlay.start(settings, args.url)
-            elif args.overlay_command in {'status', 'stop'}:
+            elif args.overlay_command in {'build', 'status', 'stop'}:
                 result = getattr(overlay, args.overlay_command)(settings)
             else:
                 result = overlay.control(settings, args.overlay_command)

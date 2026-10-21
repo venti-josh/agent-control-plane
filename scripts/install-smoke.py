@@ -28,7 +28,10 @@ base.mkdir(parents=True)
 env = {k: v for k, v in os.environ.items() if not k.startswith('ACP_')
        and k not in {'PYTHONPATH', 'PYTHONHOME', 'DEFAULT_PROVIDER', 'DEFAULT_REPO'}}
 env.update(ACP_HOME=str(base / 'home'), UV_TOOL_DIR=str(base / 'tools'),
-           UV_TOOL_BIN_DIR=str(base / 'bin'), POLL_SECONDS='0.05', RUN_TIMEOUT_SECONDS='240')
+           UV_TOOL_BIN_DIR=str(base / 'bin'), POLL_SECONDS='0.05', RUN_TIMEOUT_SECONDS='240',
+           # CI has no display and Linux has no swiftc: keep Comet out of the installer and the
+           # service lifecycle so `acp start`/`acp update` behave the same on both platforms.
+           ACP_OVERLAY='0')
 handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(ROOT / 'dist/release'))
 httpd = http.server.ThreadingHTTPServer(('127.0.0.1', 0), handler)
 thread = threading.Thread(target=httpd.serve_forever, daemon=True)
