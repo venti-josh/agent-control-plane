@@ -157,6 +157,13 @@ def entries():
     found = []
     for file in sorted(state.glob('*.json')):
         entry = load(file.stem)
+        if entry.get('failAt') and time.time() >= entry['failAt']:
+            del entry['failAt']; entry['state'] = 'failed'
+            if entry.pop('record', False):
+                job = Path(os.environ['CLAUDE_CONFIG_DIR']) / 'jobs' / entry['id']
+                job.mkdir(parents=True, exist_ok=True)
+                (job / 'state.json').write_text(json.dumps({'state': 'failed', 'detail': 'exit 1 before init'}))
+            save(entry)
         if entry.get('pid'):
             try:
                 os.kill(entry['pid'], 0)
@@ -249,12 +256,9 @@ else:
         print(f'note: started a copy of that conversation as {entry["id"]}.')
 entry.update(cwd=os.getcwd(), kind='background', startedAt=int(time.time() * 1000))
 save(entry)
-if '[crash]' in prompt:  # A worker that dies during startup is settled as failed, with no pid.
-    entry['state'] = 'failed'
+if '[crash' in prompt:  # Listed as working without a pid, then settled as failed when the worker dies starting up.
+    entry.update(state='working', failAt=time.time() + 0.5, record='[crash]' in prompt)
     save(entry)
-    job = Path(os.environ['CLAUDE_CONFIG_DIR']) / 'jobs' / entry['id']
-    job.mkdir(parents=True)
-    (job / 'state.json').write_text(json.dumps({'state': 'failed', 'detail': 'exit 1 before init'}))
     sys.stdout.buffer.write(f'backgrounded · {entry["id"]} · {entry["name"]}\n'.encode('utf-8'))
     sys.exit(0)
 worker = subprocess.Popen([sys.executable, sys.argv[0], 'worker', entry['id']], cwd=os.getcwd(),
@@ -463,18 +467,18 @@ async def test_background_session_exit_without_report_fails(live_api, git_repo, 
     assert task['runs'][0]['status'] == 'failed'
 
 
-async def test_background_session_failure_reports_claudes_reason(live_api, git_repo, fake_bg_cli):
+@pytest.mark.parametrize('marker, reason', [('[crash]', ': exit 1 before init'), ('[crash-no-record]', '')])
+async def test_background_session_failure_reports_claudes_reason(live_api, git_repo, fake_bg_cli, marker, reason):
     svc = live_api
     svc.settings.claude_command = fake_bg_cli
-    task = svc.create_task('Crash', description='[crash]', provider='claude', state='todo', repo_path=str(git_repo))
+    task = svc.create_task('Crash', description=marker, provider='claude', state='todo', repo_path=str(git_repo))
     started = time.monotonic()
     await Worker(svc).run_once()
     task = svc.get_task(task['id'])
     session = next(iter(background_state(fake_bg_cli)['sessions'].values()))
     assert task['state'] == 'waiting_on_input'
     assert task['runs'][0]['status'] == 'failed'
-    assert task['last_error'] == f"Claude background session {session['id']} failed: exit 1 before init. " \
-                                 f"See the run log."
+    assert task['last_error'] == f"Claude background session {session['id']} failed{reason}. See the run log."
     assert time.monotonic() - started < 10  # A settled failure does not wait out the startup grace period.
 
 

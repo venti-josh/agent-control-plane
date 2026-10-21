@@ -169,12 +169,14 @@ async def background_sessions(settings: Settings) -> dict[str, dict]:
 
 
 def job_detail(short: str) -> str:
-    """Claude's own reason a background session settled, such as "exit 1 before init", if it kept one."""
-    home = Path(os.getenv("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))).expanduser()
+    """Claude's own reason a background session failed, such as "exit 1 before init", if it kept one."""
+    from .claude_activity import config_home
     try:
-        detail = json.loads((home / "jobs" / short / "state.json").read_text()).get("detail")
-    except (OSError, ValueError, AttributeError):
+        job = json.loads((config_home() / "jobs" / short / "state.json").read_text())
+    except (OSError, ValueError):
         return ""
+    # Outside a failure the same field holds the prompt or a summary of the turn.
+    detail = job.get("detail") if isinstance(job, dict) and job.get("state") == "failed" else None
     return detail.strip() if isinstance(detail, str) else ""
 
 
