@@ -56,7 +56,7 @@ def main():
             if mood not in counts:
                 return JSONResponse({'detail': 'Unknown mood'}, status_code=400)
             count = counts[mood]
-            preview_activity = {'running': count, 'subagents': 0, 'waiting_on_input': 1,
+            preview_activity = {'running': count, 'subagents': 0, 'waiting_on_input': 1, 'idle': 0,
                                 'averages': {'30m': count, '1h': count, '3h': count}}
             return {'mood': mood}
 

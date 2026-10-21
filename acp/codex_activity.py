@@ -104,6 +104,10 @@ class CodexActivity:
         """When another trusted observation proved this agent idle; Codex has none."""
         return None
 
+    def awaiting_reply(self, active):
+        """Open chats that finished and await the user's next message; Codex keeps no registry of them."""
+        return 0
+
     @contextmanager
     def connect(self):
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -250,14 +254,17 @@ class CodexActivity:
                 averages[label] = total / seconds
             approvals = db.execute("SELECT count(DISTINCT w.agent) FROM waits w JOIN agents a ON a.id=w.agent "
                                    "WHERE a.state='waiting' AND w.token LIKE 'permission:%'").fetchone()[0]
+            active = {r['id'] for r in db.execute("SELECT id FROM agents WHERE kind='chat' "
+                                                  "AND state IN ('running','waiting','unknown')")}
             since = db.execute("SELECT value FROM metadata WHERE key='since'").fetchone()
             last = db.execute("SELECT value FROM metadata WHERE key='last_event'").fetchone()
+        idle = self.awaiting_reply(active) if since is not None else 0
         available = since is not None and not unknown
         message = (self.NOT_OBSERVED if since is None else
                    f'{self.LABEL} activity uncertain: {unknown} silent agent{"s" * (unknown != 1)}' if unknown else
                    f'{self.LABEL} · approval status unconfirmed' if approvals else f'{self.LABEL} · observed activity')
         return dict(source=self.SOURCE, available=available, running=running, subagents=children,
-                    waiting_on_input=waiting, approval_status_unconfirmed=approvals, unknown=unknown, averages=averages, message=message,
+                    waiting_on_input=waiting, idle=idle, approval_status_unconfirmed=approvals, unknown=unknown, averages=averages, message=message,
                     observed_since=since[0] if since else None, last_event_at=last[0] if last else None)
 
 
