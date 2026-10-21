@@ -19,7 +19,7 @@ import uvicorn
 from dotenv import dotenv_values
 from fastapi import HTTPException, Request
 
-from . import claude_activity
+from . import claude_activity, overlay
 from .config import Settings, config_path
 
 AGENTS = ('claude', 'codex')
@@ -116,12 +116,52 @@ def status(settings) -> dict:
             result['worker_error'] = health['worker_error']
         except (httpx.HTTPError, ValueError, KeyError):
             pass
+    result['comet'] = comet_status(settings)
     return result
+
+
+# Comet, the macOS overlay, rides along with the service: acp start opens it (building it first
+# when needed) and acp stop quits it. It never decides whether the service itself starts or stops.
+def comet_status(settings) -> dict:
+    """running, log, and why Comet is not running when it should be; acp overlay status has the details."""
+    if sys.platform != 'darwin':
+        return {'running': False, 'skipped': 'Comet is a native macOS overlay.'}
+    current = overlay.status(settings)
+    result = {'running': current['running'], 'log': current['log']}
+    if not current['running'] and not settings.overlay_enabled:
+        result['skipped'] = 'ACP_OVERLAY=0'
+    return result
+
+
+def comet_start(settings, url: str) -> dict:
+    current = comet_status(settings)
+    if current['running'] or current.get('skipped'):
+        return current
+    try:
+        built = overlay.build(settings)
+        if built.get('skipped'):
+            return {**current, 'skipped': built['skipped']}
+        overlay.start(settings, url)
+    except (ValueError, OSError) as exc:
+        lines = str(exc).splitlines() or ['Comet did not start.']
+        return {**current, 'error': lines[0] + (' Run acp overlay build for details.' if len(lines) > 1 else '')}
+    return comet_status(settings)
+
+
+def comet_stop(settings) -> dict:
+    if sys.platform != 'darwin':
+        return comet_status(settings)
+    try:
+        overlay.stop(settings)
+    except (ValueError, OSError) as exc:
+        return {**comet_status(settings), 'error': str(exc)}
+    return comet_status(settings)
 
 
 def start(settings, port=None) -> dict:
     current = status(settings)
     if current['reachable']:
+        current['comet'] = comet_start(settings, current['url'])
         return current
     process = None
     if not current['running']:
@@ -146,6 +186,7 @@ def start(settings, port=None) -> dict:
     while time.monotonic() < deadline:
         current = status(settings)
         if current['healthy']:
+            current['comet'] = comet_start(settings, current['url'])
             return current
         if process and process.poll() is not None and not current['running']:
             break
@@ -154,8 +195,9 @@ def start(settings, port=None) -> dict:
 
 
 def stop(settings) -> dict:
+    comet = comet_stop(settings)
     if not locked(settings):
-        return {'running': False, 'healthy': False}
+        return {'running': False, 'healthy': False, 'comet': comet}
     info = metadata(settings)
     if not info:
         raise RuntimeError('Service is starting or metadata is missing; retry stop shortly.')
@@ -168,7 +210,7 @@ def stop(settings) -> dict:
         if time.monotonic() >= deadline:
             raise RuntimeError('Service is still shutting down. Inspect service.log and retry status.')
         time.sleep(.1)
-    return {'running': False, 'healthy': False}
+    return {'running': False, 'healthy': False, 'comet': comet}
 
 
 def server_main(port: int):
