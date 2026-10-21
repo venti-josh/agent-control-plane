@@ -195,49 +195,30 @@ def main():
                 page.locator('#subscription-list button').click()
                 expect(page.locator('#subscription-list')).to_contain_text('No outgoing subscriptions.')
                 page.locator('[data-close="settings-dialog"]').click()
-                # Synthetic desktop transport, real API and UI: delivery is not execution.
+                # A Codex approval parked on the board, answered with its button (synthetic live run).
                 from uuid import uuid4
-                from acp.desktop import DesktopBridge
-                dispatcher = DesktopBridge(svc)
-                dispatcher.connect(str(uuid4()))
-                fake_codex = Path(tmp) / 'codex'
-                fake_codex.write_text('#!/bin/sh\nprintf "Queued browser test\\n"\n')
-                fake_codex.chmod(0o755)
-                svc.settings.codex_command = str(fake_codex)
-                app_task = svc.create_task('Delayed dispatcher', provider='codex', state='todo')
-                page.get_by_role('button', name='Open Delayed dispatcher', exact=True).click()
-                expect(page.locator('#task-runs')).to_contain_text('Awaiting dispatcher')
-                expect(page.get_by_role('button', name='Open Delayed dispatcher', exact=True).locator('.card-bottom')).to_contain_text('Todo')
-                expect(page.locator('#running-count')).to_have_text('')
-                page.get_by_text('Run history & session', exact=True).click()
-                page.get_by_role('button', name='Retry delivery', exact=True).click()
-                expect(page.locator('#toast')).to_contain_text('same run')
-                observed = svc.get_task(app_task['id'])
-                assert len(observed['runs']) == 1
-                job = observed['runs'][0]
-                assert job['desktop']['recovery_at'] and job['started_at'] is None
-                screenshot = os.getenv('ACP_RECOVERY_SCREENSHOT')
+                app_task = svc.create_task('Needs approval', provider='codex')
+                job = str(uuid4())
+                with svc.store.transaction() as db:
+                    db.execute("UPDATE tasks SET state='todo' WHERE id=?", (app_task['id'],))
+                    db.execute("INSERT INTO runs(id,task_id,status,trigger,inputs,created_at) VALUES(?,?,'running','todo','[]',?)",
+                               (job, app_task['id'], time.time()))
+                svc.mark_started(job)
+                svc.request_approval(job, {'id': 0, 'method': 'item/commandExecution/requestApproval',
+                                           'params': {'command': 'curl https://example.com'}},
+                                     'Codex asks to run a command:\n\n```\ncurl https://example.com\n```')
+                page.evaluate('refresh()')
+                page.get_by_role('button', name='Open Needs approval', exact=True).click()
+                expect(page.locator('#task-summary')).to_contain_text('Codex needs your approval')
+                screenshot = os.getenv('ACP_APPROVAL_SCREENSHOT')
                 if screenshot:
                     page.screenshot(path=screenshot, full_page=True)
-                dispatcher.claim(job['id'])
-                expect(page.locator('#task-runs')).to_contain_text('Awaiting task start')
-                expect(page.get_by_role('button', name='Retry delivery', exact=True)).to_have_count(0)
-                session = str(uuid4())
-                dispatcher.started(job['id'], session)
-                expect(page.locator('#running-count')).to_have_text('1 running')
-                expect(page.get_by_role('button', name='Open Delayed dispatcher', exact=True).locator('.card-bottom')).to_contain_text('In Progress')
-                expect(page.locator('#task-runs')).to_contain_text('Current run: running')
-                with svc.store.transaction() as db:
-                    db.execute("UPDATE desktop_runs SET delivery_attempts=3,queue_error='Observation delivery failed',next_attempt_at=NULL,recovery_at=NULL WHERE run_id=?", (job['id'],))
-                page.evaluate('refresh()')
-                expect(page.get_by_role('button', name='Reconcile handoff', exact=True)).to_be_visible()
-                page.get_by_role('button', name='Reconcile handoff', exact=True).click()
-                expect(page.locator('#toast')).to_contain_text('same run')
-                page.wait_for_function("!document.querySelector('#task-runs').textContent.includes('Observation delivery failed')")
-                assert dispatcher.claim(job['id'])['action'] == 'observe'
-                assert len(svc.get_task(app_task['id'])['runs']) == 1
-                dispatcher.action(job['id'], session, 'review', text='Synthetic browser check complete')
-                dispatcher.complete(job['id'], session)
+                page.get_by_role('button', name='Accept for session', exact=True).click()
+                expect(page.locator('#task-summary')).not_to_contain_text('Codex needs your approval')
+                assert [a['decision'] for a in svc.answered_approvals(job)] == ['acceptForSession']
+                assert svc.get_task(app_task['id'])['state'] == 'in_progress'
+                svc.cancel(app_task['id'])
+                svc.finish_run(job)
                 page.locator('[data-close="task-dialog"]').click()
                 # Reconciliation changes current task state, not historical run outcomes.
                 for lane, label, outcome in (
@@ -254,7 +235,7 @@ def main():
                         db.execute('UPDATE tasks SET state=? WHERE id=?', (lane, item['id']))
                         db.execute("INSERT INTO runs(id,task_id,status,trigger,inputs,created_at,finished_at,error) VALUES(?,?,?,'todo','[]',?,?,?)",
                                    (run_id, item['id'], outcome, time.time()-120, time.time()-60,
-                                    'Historical dispatcher timeout' if outcome == 'failed' else None))
+                                    'Historical run timeout' if outcome == 'failed' else None))
                     page.evaluate('refresh()')
                     card = page.get_by_role('button', name='Open ' + item['title'], exact=True)
                     expect(card.locator('.card-bottom')).to_contain_text(label)
@@ -267,14 +248,14 @@ def main():
                     expect(page.locator('#task-runs .run')).to_contain_text('Past run: ' + outcome)
                     expect(page.locator('#task-runs')).to_contain_text('Finished:')
                     if outcome == 'failed':
-                        expect(page.locator('#task-runs')).to_contain_text('Run error: Historical dispatcher timeout')
+                        expect(page.locator('#task-runs')).to_contain_text('Run error: Historical run timeout')
                     assert svc.get_task(item['id'])['runs'][0]['status'] == outcome
                     page.locator('[data-close="task-dialog"]').click()
                 page.set_viewport_size({'width':390,'height':844})
                 expect(page.locator('.lane')).to_have_count(7)
                 assert not errors, errors
                 browser.close()
-                print('Browser smoke passed (transport=' + ('test bridge' if os.getenv('ACP_BROWSER_BRIDGE') == '1' else 'native') + '): 7 lanes, live events, input/review loop, create/move, escaped text, subscriptions, dispatcher delay/recovery/start, mobile viewport.')
+                print('Browser smoke passed (transport=' + ('test bridge' if os.getenv('ACP_BROWSER_BRIDGE') == '1' else 'native') + '): 7 lanes, live events, input/review loop, create/move, escaped text, subscriptions, Codex approval buttons, mobile viewport.')
         finally:
             server.should_exit = True
             thread.join(timeout=10)

@@ -101,46 +101,6 @@ def test_recovery_closes_subagents_and_wait_count_survives_process_exit(service)
     assert activity.summary()['waiting_on_input'] == 0
 
 
-def test_desktop_reports_are_bound_validated_and_track_waiting_children(client, monkeypatch):
-    """Wrong chat/late reports must never inflate concurrency or leave open intervals."""
-    import json
-    from uuid import uuid4
-    from acp.desktop import DesktopBridge
-    svc = client.app.state.service
-    bridge = DesktopBridge(svc)
-    task = svc.create_task('Desktop agents', provider='codex', state='todo')
-    run = svc.claim_next()
-    bridge.dispatch(run['id'])
-    bridge.claim(run['id'])
-    thread = str(uuid4())
-    clock = [20000]
-    monkeypatch.setattr('time.time', lambda: clock[0])
-    bridge.started(run['id'], thread)
-    url = f'/api/desktop/runs/{run["id"]}/action'
-    def report(states, session=thread):
-        return client.post(url, json={'thread_id': session, 'action': 'activity', 'text': json.dumps(states)})
-    assert report({'child': 'running'}, str(uuid4())).status_code == 409
-    assert report({'child': 'running'}).status_code == 200
-    assert report({'child': 'running'}).status_code == 200
-    clock[0] += 900
-    assert report({'child': 'waiting_on_input'}).status_code == 200
-    data = Activity(client.app.state.service.store).summary()
-    assert data['running'] == 1
-    assert data['waiting_on_input'] == 1
-    assert report({'child': 'bogus'}).status_code == 422
-    clock[0] += 900
-    assert Activity(client.app.state.service.store).summary()['averages']['30m'] == 1.5
-    assert report({'child': 'completed'}).status_code == 200
-    assert Activity(client.app.state.service.store).summary()['waiting_on_input'] == 0
-    bridge.action(run['id'], thread, 'input', text='Need direction')
-    # A parent waiting for a person is no longer doing work, even before acknowledgement.
-    assert Activity(client.app.state.service.store).summary()['running'] == 0
-    assert Activity(client.app.state.service.store).summary()['waiting_on_input'] == 1
-    assert report({'late': 'running'}).status_code == 409
-    bridge.complete(run['id'], thread)
-    assert report({'late': 'running'}).status_code == 409
-
-
 def test_malformed_cli_events_cannot_break_tracking_or_count_parent_twice(service):
     from acp.activity import Activity
     _, run = started(service)

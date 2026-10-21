@@ -99,11 +99,7 @@ def active_cli_runs(settings: Settings) -> int:
         # -wal/-shm files, which are absent around service restarts. mode=rw never creates the file.
         db = sqlite3.connect(f'file:{path}?mode=rw', uri=True, timeout=5)
         try:
-            try:
-                return db.execute("SELECT count(*) FROM runs r WHERE r.status='running' "
-                                  'AND NOT EXISTS(SELECT 1 FROM desktop_runs d WHERE d.run_id=r.id)').fetchone()[0]
-            except sqlite3.OperationalError:
-                return db.execute("SELECT count(*) FROM runs WHERE status='running'").fetchone()[0]
+            return db.execute("SELECT count(*) FROM runs WHERE status='running'").fetchone()[0]
         finally:
             db.close()
     except sqlite3.Error as exc:

@@ -139,11 +139,6 @@ def test_running_cli_runs_block_the_restart_but_app_and_queued_runs_do_not(setti
     with pytest.raises(RuntimeError, match='1 board run would be interrupted'):
         update(settings, client=release())
     assert tools.events == [] and tools.changes() == []
-    with service.store.transaction() as db:  # A Codex app run lives in the app and survives restarts.
-        db.execute('INSERT INTO desktop_runs(run_id, phase) VALUES(?, ?)', (run['id'], 'dispatched'))
-    assert active_cli_runs(settings) == 0
-    with service.store.transaction() as db:
-        db.execute('DELETE FROM desktop_runs')
     result = update(settings, force=True, client=release())
     assert result['updated'] is True
 

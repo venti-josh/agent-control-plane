@@ -31,21 +31,6 @@ class Model(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class DesktopConnection(Model):
-    thread_id: str | None = None
-
-
-class DesktopRequest(Model):
-    comment_id: str = ''
-    thread_id: str = ''
-    repo: str = ''
-    action: Literal['get', 'comment', 'input', 'review', 'activity'] = 'get'
-    text: str = Field(default='', max_length=100000)
-    output_url: str = ''
-    kind: Literal['text', 'file', 'url', 'pr'] = 'text'
-    error: str = Field(default='', max_length=5000)
-
-
 class CreateTask(Model):
     title: str = Field(min_length=1, max_length=500)
     description: str = Field(default="", max_length=100000)
@@ -221,38 +206,6 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True,
     if hooks_only:
         return app
 
-    from .desktop import DesktopBridge
-    desktop = DesktopBridge(service)
-
-    @app.get('/api/desktop')
-    def desktop_status():
-        return desktop.status()
-
-    @app.post('/api/desktop/connection')
-    def desktop_connect(data: DesktopConnection):
-        return desktop.connect(data.thread_id)
-
-    @app.post('/api/desktop/runs/{run_id}/{operation}')
-    async def desktop_run(run_id: str, operation: str, data: DesktopRequest,
-                          idempotency_key: str | None = Header(default=None, alias='Idempotency-Key')):
-        if operation == 'recover':
-            return await desktop.recover(run_id)
-        if operation == 'claim':
-            return await asyncio.to_thread(desktop.claim, run_id)
-        if operation == 'steering':
-            return desktop.steering(run_id)
-        if operation == 'steered':
-            return desktop.steered(run_id, data.thread_id, data.comment_id)
-        if operation == 'prepare':
-            return await desktop.prepare(run_id, data.repo)
-        if operation in {'bind', 'started'}:
-            return getattr(desktop, operation)(run_id, data.thread_id)
-        if operation in {'complete', 'acknowledge'}:
-            return desktop.complete(run_id, data.thread_id, data.error)
-        if operation == 'action':
-            return desktop.action(run_id, data.thread_id, data.action, data.text, data.output_url, data.kind, idempotency_key)
-        raise DomainError('Unknown desktop operation', 404)
-
     try:
         provenance = json.loads(distribution('acp').read_text('direct_url.json') or '{}')
         build_revision = provenance.get('vcs_info', {}).get('commit_id')
@@ -262,7 +215,7 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True,
     @app.get("/api/health")
     def health():
         failed = store.one("SELECT count(*) n FROM outbox WHERE status='failed'")["n"]
-        return {"version": __version__, "build_revision": build_revision, "desktop": desktop.status(), "capabilities": ["command-receipts"], "worker_running": any(not task.done() for task in worker.tasks),
+        return {"version": __version__, "build_revision": build_revision, "capabilities": ["command-receipts"], "worker_running": any(not task.done() for task in worker.tasks),
                 "worker_error": worker.last_error, "failed_deliveries": failed}
 
     @app.get("/api/config")
@@ -272,7 +225,7 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True,
                 "providers": list(PROVIDERS), "default_provider": settings.default_provider,
                 "default_repo": settings.default_repo, "linear_enabled": settings.linear_enabled,
                 "linear_user_name": linear_saved.get('user_name', ''),
-                "github_enabled": bool(settings.github_webhook_secret), "codex_desktop": desktop.status()["connected"]}
+                "github_enabled": bool(settings.github_webhook_secret), "codex_approvals": settings.codex_approvals}
 
     @app.get("/api/tasks")
     def tasks():

@@ -35,13 +35,6 @@
     <details><summary>Run history & session</summary><p class="hint">Past runs keep their original outcomes. The task’s current status is shown above.</p><div id="task-runs"></div><button id="reset-session" class="quiet">Reset agent session</button><p class="hint">Keeps task history and files; the next run gets fresh agent context.</p></details>
   </dialog>
   <dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-heading"><div class="dialog-heading"><h2 id="settings-heading">Settings</h2><button class="close" data-close="settings-dialog" aria-label="Close">×</button></div>
-    <section>
-      <div class="connection-heading"><h3>Codex app</h3><span id="desktop-badge" class="chip">CLI mode</span></div>
-      <p id="desktop-status" class="hint"></p>
-      <button id="desktop-copy" type="button">Copy setup prompt</button>
-      <button id="desktop-disconnect" type="button" class="quiet" hidden>Disconnect</button>
-      <details><summary>Connection details</summary><form id="desktop-connect-form"><label>Dispatcher chat ID<input id="desktop-thread" required placeholder="Chat UUID"></label><button type="submit">Connect</button></form><textarea id="desktop-instructions" readonly rows="5" aria-label="Codex setup prompt"></textarea></details>
-    </section>
     <section class="linear-connection">
       <div class="connection-heading"><h3>Linear</h3><span id="linear-badge" class="chip">Not connected</span></div>
       <p id="linear-status" role="status"></p><p id="linear-error" class="hint" role="alert" hidden></p>
