@@ -2,7 +2,14 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let config, tasks = [], selected = null, dragId = null, refreshTimer, toastTimer, refreshVersion = 0;
-const labels = {claude:'Claude Code',codex:'Codex',demo:'Demo'};
+const labels = {claude:'Claude Code',codex:'Codex'};
+const providerLabel = (provider) => labels[provider] || 'Not configured';
+// Selects list the providers the server offers; a task keeps an unknown (legacy) provider until it is changed.
+function providerOptions(current) {
+  const providers = current && !config.providers.includes(current) ? [current, ...config.providers] : config.providers;
+  return providers.map(p => `<option value="${esc(p)}"${p === current ? ' selected' : ''}>${esc(providerLabel(p))}</option>`).join('');
+}
+function setProvider(select, value) { select.innerHTML = providerOptions(config.providers.includes(value) ? value : config.providers[0]); }
 const time = (t) => new Date(t * 1000).toLocaleString(undefined, {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, 6000); }
 const pendingCommands = new Map();
@@ -75,7 +82,7 @@ function drawBoard() {
   $('running-count').textContent = running ? `${running} running` : '';
   $('board').innerHTML = config.states.map(state => {
     const cards = tasks.filter(t => t.state === state.id);
-    return `<div class="lane" data-state="${state.id}" aria-label="${state.label}"><div class="lane-heading"><span class="lane-dot"></span>${state.label}<span class="lane-count">${cards.length}</span></div>${cards.map(t => `<button class="card" draggable="true" data-id="${t.id}" aria-label="Open ${esc(t.title)}"><span class="card-top"><span>${esc(t.linear_url ? 'LINEAR' : 'TASK')} ${t.id.slice(0,6).toUpperCase()}</span><span>···</span></span><span class="card-title">${esc(t.title)}</span><span class="card-desc">${esc(t.description)}</span><span class="card-bottom"><span class="provider ${t.provider}">${labels[t.provider]}</span><span class="task-status ${esc(t.state)}">${esc(state.label)}</span></span></button>`).join('') || '<div class="empty-lane">Drop a task here</div>'}</div>`;
+    return `<div class="lane" data-state="${state.id}" aria-label="${state.label}"><div class="lane-heading"><span class="lane-dot"></span>${state.label}<span class="lane-count">${cards.length}</span></div>${cards.map(t => `<button class="card" draggable="true" data-id="${t.id}" aria-label="Open ${esc(t.title)}"><span class="card-top"><span>${esc(t.linear_url ? 'LINEAR' : 'TASK')} ${t.id.slice(0,6).toUpperCase()}</span><span>···</span></span><span class="card-title">${esc(t.title)}</span><span class="card-desc">${esc(t.description)}</span><span class="card-bottom"><span class="provider ${esc(t.provider)}">${esc(providerLabel(t.provider))}</span><span class="task-status ${esc(t.state)}">${esc(state.label)}</span></span></button>`).join('') || '<div class="empty-lane">Drop a task here</div>'}</div>`;
   }).join('');
   document.querySelectorAll('.card').forEach(card => {
     card.onclick = attempt(() => openTask(card.dataset.id));
@@ -113,7 +120,8 @@ async function openTask(id) {
   selected = await api(`/tasks/${id}`);
   $('comment-body').value = ''; delete $('comment-body').dataset.blocker;
   $('edit-details').open = false;
-  for (const key of ['title','description','provider','repo_path']) $('edit-form').elements[key].value = selected[key] || '';
+  for (const key of ['title','description','repo_path']) $('edit-form').elements[key].value = selected[key] || '';
+  $('edit-form').elements.provider.innerHTML = providerOptions(selected.provider);
   drawTask(); $('task-dialog').showModal();
 }
 function drawTask() {
@@ -121,7 +129,7 @@ function drawTask() {
   $('task-short-id').textContent = 'TASK ' + task.id.slice(0,8).toUpperCase();
   $('task-heading').textContent = task.title;
   const blocker = task.comments.find(c => c.id === task.blocker_comment_id);
-  $('task-summary').innerHTML = `<div class="meta"><span class="provider ${task.provider}">${labels[task.provider]}</span><span>${esc(config.states.find(s => s.id === task.state).label)}</span>${task.linear_url ? safeLink(task.linear_url,'Open in Linear ↗') : ''}${task.branch ? `<span>${esc(task.branch)}</span>` : ''}</div><p class="task-description">${esc(task.description)}</p>${blocker ? `<div class="blocker"><strong>Waiting on your input</strong><br>${esc(blocker.body)}</div>` : ''}${task.last_error ? `<p class="hint">Last run error: ${esc(task.last_error)}</p>` : ''}`;
+  $('task-summary').innerHTML = `<div class="meta"><span class="provider ${esc(task.provider)}">${esc(providerLabel(task.provider))}</span><span>${esc(config.states.find(s => s.id === task.state).label)}</span>${task.linear_url ? safeLink(task.linear_url,'Open in Linear ↗') : ''}${task.branch ? `<span>${esc(task.branch)}</span>` : ''}</div><p class="task-description">${esc(task.description)}</p>${blocker ? `<div class="blocker"><strong>Waiting on your input</strong><br>${esc(blocker.body)}</div>` : ''}${task.last_error ? `<p class="hint">Last run error: ${esc(task.last_error)}</p>` : ''}`;
   const laneSelect = $('task-state');
   // Live events must not overwrite a lane the user selected but hasn't applied.
   const chosenLane = laneSelect.dataset.task === task.id && laneSelect.dataset.state === task.state
@@ -177,7 +185,7 @@ async function updateLinearStatus() {
   $('board-owner').hidden = !state.user_name;
   linearStatus = state;
   $('linear-badge').textContent = state.configured ? 'Connected' : 'Not connected';
-  $('linear-status').textContent = state.configured ? `${state.user_name || 'Your Linear user'} · ${state.team_name || state.team_id} · ${labels[state.provider]}` : 'Connect Linear to bring your issues onto the board.';
+  $('linear-status').textContent = state.configured ? `${state.user_name || 'Your Linear user'} · ${state.team_name || state.team_id} · ${providerLabel(state.provider)}` : 'Connect Linear to bring your issues onto the board.';
   $('linear-error').textContent = state.sync_error || (state.failed_deliveries ? `${state.failed_deliveries} failed deliveries. Open Advanced → Delivery diagnostics.` : '');
   $('linear-error').hidden = !$('linear-error').textContent;
   $('linear-connected').hidden = !state.configured || linearEditing;
@@ -214,7 +222,10 @@ async function updateDesktopStatus() {
   config.codex_desktop = state.connected;
   $('desktop-badge').textContent = state.connected ? 'Configured' : 'CLI mode';
   $('desktop-status').textContent = state.connected
-    ? `Status: ${state.state.replaceAll('_', ' ')}. ${state.waiting_runs} waiting. Dispatcher chat: ${state.thread_id}. A saved connection does not confirm readiness. Keep Codex open; inspect this chat if delivery is delayed. Cancelling in ACP revokes results; stop active turns in Codex.`
+    ? `${state.state.replaceAll('_', ' ')} · ${state.waiting_runs} waiting · dispatcher chat ${state.thread_id}`
+    : 'Codex tasks run through the CLI. Connect the Codex app to run them in its chats instead.';
+  $('desktop-help').textContent = state.connected
+    ? 'A saved connection does not confirm readiness. Keep Codex open; inspect the dispatcher chat if delivery is delayed. Cancelling in ACP revokes results; stop active turns in Codex.'
     : 'Paste the setup prompt into Codex once. It connects a dispatcher chat that creates and continues task chats automatically.';
   $('desktop-thread').value = state.thread_id || '';
   $('desktop-instructions').value = state.instructions;
@@ -244,8 +255,11 @@ async function init() {
   config = await api('/config');
   $('board-owner').textContent = config.linear_user_name ? `${config.linear_user_name}’s board` : '';
   $('board-owner').hidden = !config.linear_user_name;
-  $('default-provider').textContent = 'Default: ' + labels[config.default_provider];
-  $('create-form').elements.provider.value = config.default_provider;
+  $('default-provider').textContent = 'Default: ' + providerLabel(config.default_provider);
+  $('agents-badge').textContent = 'Default: ' + providerLabel(config.default_provider);
+  $('agents-status').innerHTML = config.providers.map(p => `${esc(providerLabel(p))} runs <code>${esc(config[p + '_command'])}</code>`).join(' · ');
+  setProvider($('create-form').elements.provider, config.default_provider);
+  for (const select of [$('linear-form').elements.provider, $('linear-provider')]) setProvider(select, 'codex');
   $('create-form').elements.repo_path.value = config.default_repo;
   document.querySelectorAll('[data-close]').forEach(b => b.onclick = () => $(b.dataset.close).close());
   $('task-dialog').addEventListener('close', () => selected = null);
@@ -253,7 +267,7 @@ async function init() {
   $('create-form').onsubmit = attempt(async () => {
     const data = Object.fromEntries(new FormData($('create-form')));
     await api('/tasks','POST',data); $('create-dialog').close(); $('create-form').reset();
-    $('create-form').elements.provider.value = config.default_provider; $('create-form').elements.repo_path.value = config.default_repo;
+    setProvider($('create-form').elements.provider, config.default_provider); $('create-form').elements.repo_path.value = config.default_repo;
     await refresh();
   });
   $('edit-form').onsubmit = attempt(async () => {
@@ -291,7 +305,7 @@ async function init() {
     $('linear-owner').textContent = `Connected as ${linearDiscovery.user.name}`;
     $('linear-team').innerHTML = linearDiscovery.teams.map(t => `<option value="${esc(t.id)}">${esc(t.name)} (${esc(t.key)})</option>`).join('');
     if (linearDiscovery.teams.some(t => t.id === linearStatus.team_id)) $('linear-team').value = linearStatus.team_id;
-    $('linear-provider').value = linearStatus.provider || 'codex';
+    setProvider($('linear-provider'), config.providers.includes(linearStatus.provider) ? linearStatus.provider : 'codex');
     $('linear-setup-form').hidden = !linearDiscovery.teams.length;
     $('linear-connect-form').hidden = !!linearDiscovery.teams.length;
     $('linear-save').textContent = linearStatus.configured ? 'Save changes' : 'Connect Linear';
@@ -313,13 +327,6 @@ async function init() {
   }));
   $('settings-dialog').addEventListener('close', () => { $('linear-key').value = ''; linearEditing = false; linearDiscovery = null; $('linear-setup-form').hidden = true; $('linear-workflow-details').open = false; });
   $('reconcile-linear').onclick = attempt(async () => { const result = await api('/integrations/linear/reconcile','POST'); toast('Queued a scan for issues with the acp label.'); });
-  $('demo-btn').onclick = attempt(async () => {
-    $('demo-btn').disabled = true;
-    try {
-      for (const item of [{title:'Clarify the acceptance criteria',description:'[ask] Demo: the agent pauses with a question. Reply to resume.',state:'todo'}, {title:'Review an agent’s output',description:'Demo: request changes to run the same task again.',state:'todo'}, {title:'Plan your first real task',description:'Choose a repository and Claude or Codex, then move this task into Todo.',state:'planning'}]) await api('/tasks','POST',{...item,provider:'demo'});
-      await refresh();
-    } finally { $('demo-btn').disabled = false; }
-  });
   await refresh(); await health();
   const stream = new EventSource('/api/events/stream');
   stream.onopen = () => { $('connection').textContent = 'Live'; $('connection').classList.add('live'); };
