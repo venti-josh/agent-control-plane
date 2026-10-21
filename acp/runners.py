@@ -468,14 +468,16 @@ class CLIRunner:
                             raise RuntimeError(f"Claude background session {short} failed"
                                                f"{': ' + detail if detail else ''}. See the run log.")
                         # Until its worker starts, Claude lists the session as working without a pid.
-                        starting = (entry and not entry.get("pid") and entry.get("state") == "working"
-                                    and not seen_busy and time.monotonic() - started < STARTUP_LIMIT_SECONDS)
+                        pending = entry and not entry.get("pid") and entry.get("state") == "working" and not seen_busy
+                        starting = pending and time.monotonic() - started < STARTUP_LIMIT_SECONDS
                         misses = misses + 1 if observed == "exited" and not starting else 0
                         if starting:
                             grace_from = time.monotonic()
                         # Right after launch the registry can list the session before its pid, and
                         # idle before the prompt is picked up; a brief registry gap is not an exit either.
-                        settled = seen_busy or time.monotonic() - grace_from > STARTUP_GRACE_SECONDS
+                        # A session that has not started by the startup limit gets no further grace.
+                        settled = (seen_busy or (pending and not starting)
+                                   or time.monotonic() - grace_from > STARTUP_GRACE_SECONDS)
                         if observed == "busy":
                             seen_busy = True
                         elif observed == "idle" and settled:

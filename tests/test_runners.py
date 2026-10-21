@@ -509,11 +509,10 @@ async def test_background_slow_startup_failure_still_reports_claudes_reason(live
 
 
 async def test_background_stuck_startup_gives_up_at_the_startup_limit(live_api, git_repo, fake_bg_cli, monkeypatch):
-    monkeypatch.setattr(runners, 'STARTUP_GRACE_SECONDS', 0.3)
-    monkeypatch.setattr(runners, 'STARTUP_LIMIT_SECONDS', 1)
+    monkeypatch.setattr(runners, 'STARTUP_LIMIT_SECONDS', 1)  # The 30-second grace is not added on top.
     svc = live_api
     svc.settings.claude_command = fake_bg_cli
-    svc.settings.run_timeout_seconds = 5  # Waiting for Claude without a limit would end here instead.
+    svc.settings.run_timeout_seconds = 5  # Waiting past the startup limit would end here instead.
     task = svc.create_task('Stuck', description='[stuck-start]', provider='claude', state='todo',
                            repo_path=str(git_repo))
     await Worker(svc).run_once()
