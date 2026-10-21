@@ -29,12 +29,22 @@ def parse_version(value: str) -> tuple[int, ...]:
     return tuple(int(part) for part in value.split('.'))
 
 
+def uv_version(uv: str) -> tuple[int, ...]:
+    try:
+        output = subprocess.run([uv, '--version'], capture_output=True, text=True, timeout=10).stdout
+        return parse_version(VERSION.search(output).group())
+    except (OSError, subprocess.SubprocessError, AttributeError, ValueError):
+        return ()
+
+
 def find_uv() -> str:
-    # The release installer bootstraps its own uv when none is on PATH.
-    for candidate in (shutil.which('uv'), str(user_home() / 'installer/uv/uv')):
-        if candidate and os.access(candidate, os.X_OK):
-            return candidate
-    raise RuntimeError('uv is required to update ACP; rerun the release installer to install it.')
+    """The newest uv available. The release installer bootstraps its own uv when none is on PATH,
+    and a uv on PATH can predate the lockfile's required-version while the bundled one keeps up."""
+    candidates = [candidate for candidate in (shutil.which('uv'), str(user_home() / 'installer/uv/uv'))
+                  if candidate and os.access(candidate, os.X_OK)]
+    if not candidates:
+        raise RuntimeError('uv is required to update ACP; rerun the release installer to install it.')
+    return max(candidates, key=uv_version)  # Ties keep the uv on PATH.
 
 
 def release_base(version: str | None = None) -> str:
