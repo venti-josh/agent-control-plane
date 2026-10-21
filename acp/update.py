@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -183,7 +184,14 @@ def update(settings: Settings, version: str | None = None, source: Path | None =
                  str(package)], f'uv tool install failed; {stopped}. Rerun acp update or the release installer')
             # From here on use only the new executable; this process still runs the old code.
             executable = str(Path(run([uv, 'tool', 'dir', '--bin'], 'uv tool dir failed')) / 'acp')
-            run([executable, 'setup'], 'acp setup failed after installing')
+            # The new setup re-evaluates the agent hooks; a hook failure is its warning, not ours.
+            try:
+                hooks = json.loads(run([executable, 'setup'], 'acp setup failed after installing')).get('hooks')
+            except (ValueError, AttributeError):
+                hooks = None  # Releases before 0.1.6 say nothing about hooks.
+            hooks = hooks if isinstance(hooks, dict) else None
+            warnings = [f'{name} hooks {entry.get("status")}' for name, entry in (hooks or {}).items()
+                        if isinstance(entry, dict) and str(entry.get('status', '')).startswith('failed')]
             installed = installed_version(uv)
             if installed is None:
                 raise RuntimeError('Installed, but the new ACP does not import; rerun the release installer')
@@ -196,7 +204,7 @@ def update(settings: Settings, version: str | None = None, source: Path | None =
                 run([executable, 'overlay', 'start'], 'Updated, but acp overlay start failed; run it again')
                 restarted['overlay'] = True
             return {**result, 'updated': True, 'previous_version': current,
-                    'installed_version': installed, 'restarted': restarted}
+                    'installed_version': installed, 'restarted': restarted, 'hooks': hooks, 'warnings': warnings}
     finally:
         if owned:
             client.close()

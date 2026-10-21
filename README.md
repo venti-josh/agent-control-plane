@@ -20,7 +20,22 @@ The release assets must be publicly downloadable for this command.
 
 The installer prints the executable's absolute path. If its directory is not
 already on PATH, add the printed directory to PATH (usually `$HOME/.local/bin`).
-It creates configuration but does not automatically start a service or agent.
+It does not start a service or an agent, but it connects ACP to the agents you
+have: `acp setup` (which the installer runs) looks up the `claude` and `codex`
+commands on PATH, writes their absolute paths to `config.env` as
+`CLAUDE_COMMAND` and `CODEX_COMMAND` (the bare name when one is missing), and
+sets `DEFAULT_PROVIDER` to `claude` when Claude Code is installed, otherwise
+`codex`. An existing `config.env` is never modified. Setup then installs ACP's
+activity hooks for every agent it found, so Comet's counters work without a
+further step; its JSON output lists each agent (command, found or not) and each
+hook set (`installed`, `updated`, `already installed`, `skipped: not found`,
+`skipped: ACP_ACTIVITY_HOOKS=0`, or `failed: reason`). Codex trusts hook
+commands only through its own `/hooks`
+screen, so when Codex hooks were installed or changed, setup and the installer
+say so: open `/hooks` in the Codex CLI, review and trust the ACP handlers, then
+start a new turn. Set `ACP_ACTIVITY_HOOKS=0` (in the environment or in
+`config.env`) to skip hook installation; a hook problem is reported and never
+fails setup.
 
 ```sh
 acp start          # Background service; closing the terminal is safe
@@ -44,7 +59,7 @@ The service keeps running after the terminal closes. It does **not** restart
 automatically after a reboot or crash; run `acp start` again. Stopping interrupts
 agent runs and retains their session references for explicit retry. Agent files stay where the agent created them. Closing a browser tab
 does not stop tasks. Interactive API documentation is at the reported URL plus
-`/docs`. Choose **Try a demo** to exercise input and review without an agent account.
+`/docs`.
 
 ### Comet’s macOS activity overlay
 
@@ -71,23 +86,31 @@ seconds. The preview stays open until **Quit Comet**. Only this test
 server exposes mood controls; the normal overlay always follows actual activity.
 
 The tile observes **all local Codex and Claude Code chats and subagents**, including
-chats outside ACP, through user-level lifecycle hooks. Install the hook handlers once:
+chats outside ACP, through user-level lifecycle hooks. The installer installs the hook
+handlers for every agent CLI it finds, and `acp update` refreshes them (see
+[Install](#install)). After installing: open `/hooks` in the Codex CLI, review and trust
+the ACP command handlers, then start a new Codex turn and a new Claude Code session.
+The commands remain for manual control:
 
 ```sh
+acp activity status                           # combined; --target codex|claude for one
 acp activity install --target all --dry-run   # review the exact settings diff first
 acp activity install --target all             # or --target codex / --target claude
-# In the Codex CLI: open /hooks, review and trust the ACP command handlers.
-# Then start a new Codex turn and a new Claude Code session.
-acp activity status                           # combined; --target codex|claude for one
+acp activity uninstall --target all           # remove only ACP's handlers
 ```
+
+Uninstalled hooks come back on the next `acp setup` or `acp update` while the agent CLI
+is still installed; set `ACP_ACTIVITY_HOOKS=0` to keep them off.
 
 `--target` defaults to `codex`, so existing scripts keep their behavior.
 
 Codex requires explicit review of the exact hook commands; ACP never modifies
 hook trust. The installer preserves existing handlers and saves a backup beside
-`~/.codex/hooks.json`. Use `--codex-home PATH` for a custom Codex home. To remove
-only ACP's handlers, run `acp activity uninstall`. Install from the installed tool
-(or a persistent environment), since hooks use its absolute Python path.
+`~/.codex/hooks.json`. Use `--codex-home PATH` for a custom Codex home; setup and
+updates keep refreshing hooks at the home recorded when they were installed. Set
+`ACP_ACTIVITY_HOOKS=0` to keep setup from installing hooks at all. Hooks use the
+installed tool's absolute Python path, so install them from the installed tool (or a
+persistent environment).
 
 **Claude Code.** The Claude Code CLI, the Claude desktop app's Code tab, and the IDE
 extensions all read user hooks from `~/.claude/settings.json` (or
@@ -95,8 +118,8 @@ extensions all read user hooks from `~/.claude/settings.json` (or
 installer adds only ACP's command entries under `hooks`, never touches permissions or
 any other setting, preserves existing handlers (including a symlinked settings file),
 keeps the file mode, and saves the original once as `settings.acp-backup-*.json`.
-Reinstalling is a no-op; `acp activity uninstall --target claude` removes only ACP's
-entries. New sessions pick up the hooks; sessions already open may keep the hooks
+Reinstalling is a no-op unless a release adds events; `acp activity uninstall --target claude`
+removes only ACP's entries. New sessions pick up the hooks; sessions already open may keep the hooks
 they started with. The hook prints nothing (stdout from `SessionStart` and
 `UserPromptSubmit` hooks would become model context), always exits 0, and takes about
 0.1 s.
@@ -182,6 +205,16 @@ running (the service on its previous port). An installed release that is already
 current is left alone unless you pass `--reinstall`. A `--source` checkout is
 always installed, since its code can differ under the same version number.
 
+The new release's `acp setup` re-evaluates the activity hooks: hooks already
+installed are rewritten at their recorded home, so events a release adds reach
+existing installs, and an agent CLI installed since the last run gets hooks. The
+update result includes that `hooks` report; a hook failure appears under
+`warnings` and never fails the update. When the Codex hooks changed, the report
+says to open `/hooks` in the Codex CLI and trust the ACP handlers again. The
+first update from a release before 0.1.6 runs that release's updater, which
+installs the hooks but shows no report: run `acp setup` once afterwards to see
+it.
+
 The restart would interrupt board runs that are in progress, so `acp update`
 refuses while any are running; wait for them, cancel them, or pass `--force`.
 Queued runs survive the restart. `acp update` restarts only
@@ -198,9 +231,11 @@ instead of `latest`:
 curl -fsSL https://github.com/venti-josh/agent-control-plane/releases/download/v0.1.5/install.sh | sh
 ```
 
-To uninstall, run `acp stop`, then `uv tool uninstall acp`. If the installer supplied
-uv, use `$HOME/.local/share/acp/installer/uv/uv` (or the corresponding `ACP_HOME` path).
-Task data is retained; delete it separately only when no longer needed.
+To uninstall, run `acp stop`, then `acp activity uninstall --target all` to remove
+ACP's hook entries from Claude Code and Codex, then `uv tool uninstall acp`. If the
+installer supplied uv, use `$HOME/.local/share/acp/installer/uv/uv` (or the
+corresponding `ACP_HOME` path). Task data is retained; delete it separately only
+when no longer needed.
 
 ### Develop from source
 
@@ -243,8 +278,10 @@ under `.acp/install-smoke-*` and stops its service when finished.
 Merge the version change into `main`. The **CI and release** workflow runs only on
 pushes to `main`; feature branches, pull requests, and tag pushes do not run CI.
 It checks macOS and Linux with Python 3.11 and 3.14. If `vX.Y.Z` is not already
-published, it builds and smoke-tests the installed demo on both platforms, then
+published, it builds and smoke-tests the installed CLI on both platforms, then
 creates the tag at the tested commit and publishes the exact verified Linux assets.
+The smoke test runs its task with the hidden `demo` provider, a simulated agent that
+the API accepts but the UI and CLI do not offer, so it needs no agent credentials.
 Do not create a tag manually. Subsequent pushes with the same published version run
 checks but skip publication. To release again, increase both versions and run
 `uv lock`, then merge into `main`.
@@ -509,7 +546,7 @@ Deleting a subscription prevents its undelivered jobs from sending. All event hi
 
 Open **Settings → Linear**. Paste a personal API key (or save
 `LINEAR_API_KEY` in `~/.local/share/acp/config.env`), then click **Continue**.
-Choose a team and the agent for labeled issues: Codex, Claude Code, or Demo.
+Choose a team and the agent for labeled issues: Codex or Claude Code.
 ACP discovers your account and matches statuses automatically. If statuses are
 missing, their names are shown before you connect. Click **Connect Linear**. ACP creates the
 `acp` label if it does not exist. No restart or hand-written status JSON is needed.
@@ -737,4 +774,4 @@ This is an independent implementation, not a fork of Symphony.
 - Linear webhook validation: https://linear.app/developers/webhooks
 - GitHub webhook events: https://docs.github.com/en/webhooks/webhook-events-and-payloads
 
-Provider CLI behavior can change. The native adapters need a real authenticated smoke test on the machine where you will run them; the included demo is not proof of provider integration.
+Provider CLI behavior can change. The native adapters need a real authenticated smoke test on the machine where you will run them; the simulated smoke-test provider is not proof of provider integration.

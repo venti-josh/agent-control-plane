@@ -14,6 +14,7 @@ import sys
 import time
 from pathlib import Path
 
+from . import codex_activity
 from .codex_activity import (STALE_SECONDS, CodexActivity, atomic_json, hook_manifest, identifier,
                              json_diff, owner_alive, process_info, remove_entries)
 
@@ -257,11 +258,12 @@ def install_hooks(home, database, executable, dry_run=False):
             backup.write_bytes(original); backup.chmod(0o600)
     if (path.read_bytes() if path.exists() else None) != original:
         raise ValueError('Claude settings changed while installing; retry')
-    if original is None or json.loads(original) != data:
+    changed = original is None or json.loads(original) != data
+    if changed:
         atomic_json(path, data, mode)
     atomic_json(manifest, dict(home=str(home.resolve()), settings_file=str(path), command=command,
                                empty_events=sorted(set(empty_events)), added_hooks_key=added_key))
-    return dict(settings_file=str(path), database=str(database),
+    return dict(settings_file=str(path), database=str(database), changed=changed,
                 next_step='Start a new Claude Code session (CLI, desktop Code tab, or IDE); '
                           'sessions already running may keep the hooks they started with.')
 
@@ -289,6 +291,52 @@ def uninstall_hooks(home, database):
         atomic_json(path, data, path.stat().st_mode & 0o777)
     manifest.unlink()
     return {'removed': True}
+
+
+def setup_hooks(data_dir, executable, found, enabled=True):
+    """Install or refresh every agent's activity hooks for `acp setup`.
+
+    An agent gets hooks when its CLI was found, or when a manifest records an earlier install:
+    that one is refreshed at its recorded home so a release's new events reach it. Each agent
+    is reported on its own; a failure installs nothing for that agent and nothing here raises.
+    """
+    report = {}
+    for name, module in (('codex', codex_activity), ('claude', sys.modules[__name__])):
+        if not enabled:
+            report[name] = {'status': 'skipped: ACP_ACTIVITY_HOOKS=0'}
+            continue
+        database = Path(data_dir) / f'{name}-activity.sqlite3'
+        manifest = hook_manifest(database)
+        try:
+            previous = json.loads(manifest.read_text()) if manifest.exists() else {}
+        except (OSError, ValueError):
+            previous = None
+        if not isinstance(previous, dict):
+            report[name] = {'status': f'failed: unreadable manifest {manifest}'}
+            continue
+        if not found.get(name) and not previous:
+            report[name] = {'status': 'skipped: not found'}
+            continue
+        home = Path(previous['home']) if isinstance(previous.get('home'), str) else module.config_home()
+        try:
+            result = module.install_hooks(home, database, executable)
+        except Exception as exc:  # One agent's broken file must not stop setup.
+            report[name] = {'status': f'failed: {exc}', 'home': str(home)}
+            continue
+        status = 'installed' if not previous else 'updated' if result['changed'] else 'already installed'
+        entry = {'status': status, 'home': str(home), 'file': result.get('hooks_file') or result['settings_file']}
+        if status != 'already installed':
+            entry['next_step'] = result['next_step']
+            if result.get('trust_required'):
+                entry['trust_required'] = True  # Codex trusts hook commands only through its /hooks UI.
+        current = module.config_home()
+        if found.get(name) and home.resolve() != current.resolve():
+            option = '--codex-home' if name == 'codex' else '--claude-config-dir'
+            entry['note'] = (f'kept at the recorded home; the current home is {current}. To move them, run '
+                             f'acp activity uninstall --target {name} {option} {shlex.quote(str(home))}, '
+                             f'then acp activity install --target {name}.')
+        report[name] = entry
+    return report
 
 
 def main():

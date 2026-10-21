@@ -55,8 +55,13 @@ acp_install_main() (
         case "$acp_status" in *'"running": true'*) echo 'Run acp stop before reinstalling or upgrading.' >&2; exit 1 ;; esac
     fi
     "$acp_uv" tool install --python 3.14 --reinstall --constraints "$acp_tmp/constraints.txt" "$acp_tmp/$acp_wheel"
-    "$acp_bin_dir/acp" setup
+    # Setup detects the claude and codex CLIs and installs their activity hooks; its JSON says what it found.
+    acp_setup=$("$acp_bin_dir/acp" setup)
+    printf '%s\n' "$acp_setup"
     printf '\nACP %s installed.\nRun: %s/acp start\nThen: %s/acp open\n' "$acp_version" "$acp_bin_dir" "$acp_bin_dir"
+    case "$acp_setup" in *'"trust_required": true'*)
+        printf 'Codex hooks were installed or changed: open /hooks in the Codex CLI, review and trust the ACP handlers, then start a new turn.\n' ;;
+    esac
     printf 'To run tasks in the Codex app, open Settings → Codex app and copy the setup prompt.\n'
     case ":$PATH:" in *":$acp_bin_dir:"*) ;; *) printf 'Add %s to PATH to use the short acp command.\n' "$acp_bin_dir" ;; esac
 )
