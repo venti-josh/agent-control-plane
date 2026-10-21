@@ -36,6 +36,7 @@ class Settings:
     codex_command: str = "codex"
     claude_model: str = ""
     codex_model: str = ""
+    claude_run_mode: str = ""  # background | headless; empty probes `claude --help` for --bg
     linear_api_key: str = ""
     linear_workspace_id: str = ""
     linear_team_id: str = ""
@@ -74,6 +75,8 @@ class Settings:
             raise ValueError(f"DEFAULT_PROVIDER must be one of {PROVIDERS}")
         if self.max_concurrent_runs < 1 or self.run_timeout_seconds <= 0 or self.poll_seconds <= 0:
             raise ValueError("Concurrency, timeouts and polling interval must be positive")
+        if self.claude_run_mode not in ("", "background", "headless"):
+            raise ValueError("CLAUDE_RUN_MODE must be background or headless")
         if self.linear_states:
             if set(self.linear_states) != set(STATES):
                 raise ValueError("LINEAR_STATES_JSON must map all seven internal state names to Linear state IDs")
@@ -107,6 +110,7 @@ class Settings:
             codex_command=getenv("CODEX_COMMAND", "codex"),
             claude_model=getenv("CLAUDE_MODEL", ""),
             codex_model=getenv("CODEX_MODEL", ""),
+            claude_run_mode=getenv("CLAUDE_RUN_MODE", "").strip().lower(),
             linear_api_key=getenv("LINEAR_API_KEY", ""),
             linear_workspace_id=getenv("LINEAR_WORKSPACE_ID", ""),
             linear_team_id=getenv("LINEAR_TEAM_ID", ""),
