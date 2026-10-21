@@ -75,14 +75,18 @@ def main():
                     page.goto(url)
                 expect(page.locator('.lane')).to_have_count(7)
                 expect(page.locator('#connection')).to_have_text('Live')
-                page.get_by_role('button', name='Try a demo').click()
+                # The hidden demo provider exercises the input and review loops without an agent.
+                svc = server.config.app.state.service
+                svc.create_task('Clarify the acceptance criteria', description='[ask] The agent pauses with a question.',
+                                provider='demo', state='todo')
+                svc.create_task('Review an agent’s output', description='Request changes to run the task again.',
+                                provider='demo', state='todo')
                 waiting = page.locator('[data-state="waiting_on_input"] .card')
                 review = page.locator('[data-state="ready_for_review"] .card')
                 expect(waiting).to_have_count(1, timeout=10000)
                 expect(review).to_have_count(1, timeout=10000)
                 page.screenshot(path=os.getenv('ACP_SCREENSHOT', str(Path(tmp)/'board.png')), full_page=True)
                 # Close a blocked task through the actual dialog without restarting it.
-                svc = server.config.app.state.service
                 blocked = svc.create_task('Blocked completion')
                 with svc.store.transaction() as db:
                     svc._move(db, svc._task(db, blocked['id']), 'todo', 'api')
@@ -126,6 +130,9 @@ def main():
                 page.get_by_role('button', name='+ New task').click()
                 page.locator('#create-form [name="title"]').fill('Browser-created task')
                 page.locator('#create-form [name="description"]').fill('<script>noHTML()</script>')
+                # The form only offers real agents; add the hidden demo provider so no agent CLI runs.
+                page.evaluate("document.querySelector('#create-form [name=provider]').insertAdjacentHTML('beforeend', '<option value=\"demo\">Demo</option>')")
+                page.locator('#create-form [name="provider"]').select_option('demo')
                 if os.getenv('ACP_BROWSER_BRIDGE') != '1':
                     lost_responses = []
                     def lose_create_response(route):

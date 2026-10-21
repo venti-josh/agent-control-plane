@@ -33,7 +33,7 @@ def setup() -> dict:
     try:
         with open(path, 'x', opener=lambda p, flags: os.open(p, flags, 0o600)) as file:
             file.write('# ACP user configuration. Environment variables override these values.\n'
-                       'DEFAULT_PROVIDER=demo\nDEFAULT_REPO=\n'
+                       'DEFAULT_PROVIDER=claude\nDEFAULT_REPO=\n'
                        'ACP_URL=http://127.0.0.1:8765\n'
                        'CLAUDE_COMMAND=claude\nCODEX_COMMAND=codex\n')
     except FileExistsError:

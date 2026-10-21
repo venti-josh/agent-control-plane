@@ -9,7 +9,9 @@ from dotenv import dotenv_values
 
 STATES = ("planning", "todo", "in_progress", "waiting_on_input", "ready_for_review", "deploy", "done")
 LABELS = ("Planning", "Todo", "In Progress", "Waiting on Input", "Ready for Review", "Deploy", "Done")
+# "demo" is a hidden engine provider kept for tests and the release smoke test.
 PROVIDERS = ("claude", "codex", "demo")
+UI_PROVIDERS = ("claude", "codex")
 
 
 def user_home() -> Path:
@@ -98,7 +100,7 @@ class Settings:
         s = cls(
             data_dir=Path(getenv("ACP_DATA_DIR", str(user_home() / "data"))),
             base_url=getenv("ACP_URL", "http://127.0.0.1:8765").rstrip("/"),
-            default_provider=getenv("DEFAULT_PROVIDER", "demo"),
+            default_provider=getenv("DEFAULT_PROVIDER", "claude"),
             default_repo=getenv("DEFAULT_REPO", ""),
             max_concurrent_runs=int(getenv("MAX_CONCURRENT_RUNS", "1")),
             run_timeout_seconds=float(getenv("RUN_TIMEOUT_SECONDS", "1800")),

@@ -12,6 +12,8 @@ def test_exactly_seven_lanes(client):
     config = client.get('/api/config').json()
     assert [s['id'] for s in config['states']] == list(STATES)
     assert config['default_provider'] == 'demo'
+    assert config['providers'] == ['claude', 'codex']  # the demo engine is not offered to users
+    assert config['claude_command'] == 'claude' and config['codex_command'] == 'codex'
     assert client.get('/').status_code == 200
     assert client.get('/static/app.js').status_code == 200
 

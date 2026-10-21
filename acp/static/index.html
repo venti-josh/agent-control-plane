@@ -2,56 +2,56 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ACP — Personal agent orchestration</title>
+  <title>ACP — Board</title>
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/app.js" defer></script>
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="/" aria-label="ACP home"><span class="brandmark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>acp<span class="personal">PERSONAL</span></a>
-    <div class="topright"><span id="board-owner" class="chip" hidden></span><span id="connection" class="connection">Connecting</span><button id="settings-btn" class="quiet">Settings</button><a href="/docs" target="_blank" rel="noopener">API docs</a></div>
+    <a class="brand" href="/" aria-label="ACP home"><span class="brandmark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>acp</a>
+    <div class="topright"><span id="board-owner" class="chip" hidden></span><span id="connection" class="connection">Connecting</span><button id="settings-btn" class="quiet">Settings</button><a href="/docs" target="_blank" rel="noopener">API docs</a><button id="new-task" class="primary">+ New task</button></div>
   </header>
   <main>
-    <section class="heading"><div><p class="eyebrow">YOUR LOCAL CONTROL PLANE</p><h1>Work, with an agent.</h1><p class="subtitle">Plan the task. Queue the work. Review the result.</p></div><button id="new-task" class="primary">+ New task</button></section>
-    <section class="toolbar"><div><strong>Board</strong><span class="separator"></span><span id="task-count">0 tasks</span><span id="running-count"></span></div><div><button id="demo-btn" class="quiet">Try a demo</button><span id="default-provider" class="chip"></span></div></section>
-    <p id="runtime-version" class="hint"></p>
+    <section class="toolbar"><div><span id="task-count">0 tasks</span><span id="running-count"></span></div><div><span id="default-provider" class="chip"></span><span id="runtime-version"></span></div></section>
     <div id="health-warning" role="status" hidden></div>
     <section id="board" class="board" aria-label="Task board"></section>
-    <footer><span>Todo starts a run. Waiting pauses it. Your review drives the next step.</span><span>Local-first · One workspace</span></footer>
   </main>
   <dialog id="create-dialog" aria-labelledby="create-title"><form id="create-form"><div class="dialog-heading"><h2 id="create-title">New task</h2><button type="button" class="close" data-close="create-dialog" aria-label="Close">×</button></div>
     <label>Title<input name="title" required maxlength="500" placeholder="What should the agent work on?" autofocus></label>
     <label>Description<textarea name="description" rows="5" placeholder="Context, desired outcome, and how to verify it"></textarea></label>
-    <div class="form-row"><label>Agent<select name="provider"><option value="demo">Demo (no AI calls)</option><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label><label>Starting lane<select name="state"><option value="planning">Planning</option><option value="todo">Todo — start work</option></select></label></div>
+    <div class="form-row"><label>Agent<select name="provider"></select></label><label>Starting lane<select name="state"><option value="planning">Planning</option><option value="todo">Todo — start work</option></select></label></div>
     <label>Local Git repository<input name="repo_path" placeholder="/absolute/path/to/your/repo"></label><p class="hint">The agent chooses its working directory and whether to use a worktree.</p>
     <button class="primary" type="submit">Create task</button></form>
   </dialog>
   <dialog id="task-dialog" class="task-dialog" aria-labelledby="task-heading"><div class="dialog-heading"><div><p id="task-short-id" class="eyebrow"></p><h2 id="task-heading"></h2></div><button class="close" data-close="task-dialog" aria-label="Close">×</button></div>
     <div id="task-summary"></div>
     <div class="task-actions"><select id="task-state" aria-label="Task lane"></select><button id="move-task">Move</button><button id="cancel-task" class="quiet">Stop / unqueue</button></div>
-    <details id="edit-details"><summary>Edit task</summary><form id="edit-form"><label>Title<input name="title" required maxlength="500"></label><label>Description<textarea name="description" rows="5"></textarea></label><div class="form-row"><label>Agent<select name="provider"><option value="demo">Demo</option><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label><label>Local repo<input name="repo_path"></label></div><button type="submit">Save changes</button></form></details>
+    <details id="edit-details"><summary>Edit task</summary><form id="edit-form"><label>Title<input name="title" required maxlength="500"></label><label>Description<textarea name="description" rows="5"></textarea></label><div class="form-row"><label>Agent<select name="provider"></select></label><label>Local repo<input name="repo_path"></label></div><button type="submit">Save changes</button></form></details>
     <section id="output-section"><h3>Outputs</h3><div id="task-outputs"></div></section>
     <section><h3>Conversation</h3><div id="task-comments"></div><form id="comment-form"><label class="sr-only" for="comment-body">Comment or reply</label><textarea id="comment-body" rows="3" required placeholder="Add context or feedback…"></textarea><div class="comment-actions"><button type="submit">Add comment</button><button type="button" id="resume-task" class="primary" hidden>Answer & resume</button><button type="button" id="request-changes" class="primary" hidden>Request changes</button></div></form></section>
-    <details><summary>Run history & session</summary><p class="hint">Past runs keep their original outcomes. The task’s current status is shown above.</p><div id="task-runs"></div><button id="reset-session" class="quiet">Reset agent session</button><p class="hint">Keeps task history and files; the next run gets fresh agent context.</p></details>
+    <details><summary>Run history & session</summary><div id="task-runs"></div><button id="reset-session" class="quiet">Reset agent session</button><p class="hint">Keeps task history and files; the next run starts with fresh agent context.</p></details>
   </dialog>
   <dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-heading"><div class="dialog-heading"><h2 id="settings-heading">Settings</h2><button class="close" data-close="settings-dialog" aria-label="Close">×</button></div>
     <section>
+      <div class="connection-heading"><h3>Agents</h3><span id="agents-badge" class="chip"></span></div>
+      <p id="agents-status" class="hint"></p>
+      <details><summary>Change agents</summary><p class="hint">Set <code>DEFAULT_PROVIDER</code>, <code>CLAUDE_COMMAND</code>, and <code>CODEX_COMMAND</code> in <code>config.env</code> (<code>acp setup</code> prints its location), then restart with <code>acp stop</code> and <code>acp start</code>.</p></details>
+    </section>
+    <section>
       <div class="connection-heading"><h3>Codex app</h3><span id="desktop-badge" class="chip">CLI mode</span></div>
       <p id="desktop-status" class="hint"></p>
-      <button id="desktop-copy" type="button">Copy setup prompt</button>
-      <button id="desktop-disconnect" type="button" class="quiet" hidden>Disconnect</button>
-      <details><summary>Connection details</summary><form id="desktop-connect-form"><label>Dispatcher chat ID<input id="desktop-thread" required placeholder="Chat UUID"></label><button type="submit">Connect</button></form><textarea id="desktop-instructions" readonly rows="5" aria-label="Codex setup prompt"></textarea></details>
+      <details><summary>Connection details</summary><p id="desktop-help" class="hint"></p><div class="settings-actions"><button id="desktop-copy" type="button">Copy setup prompt</button><button id="desktop-disconnect" type="button" class="quiet" hidden>Disconnect</button></div><form id="desktop-connect-form"><label>Dispatcher chat ID<input id="desktop-thread" required placeholder="Chat UUID"></label><button type="submit">Connect</button></form><textarea id="desktop-instructions" readonly rows="5" aria-label="Codex setup prompt"></textarea></details>
     </section>
     <section class="linear-connection">
       <div class="connection-heading"><h3>Linear</h3><span id="linear-badge" class="chip">Not connected</span></div>
-      <p id="linear-status" role="status"></p><p id="linear-error" class="hint" role="alert" hidden></p>
-      <div id="linear-connected" hidden><p class="hint">Your assigned issues with the <code>acp</code> label appear here. Move one to Todo to start work.</p><div class="settings-actions"><button type="button" id="reconcile-linear">Sync now</button><button type="button" id="linear-edit" class="quiet">Edit connection</button></div><p class="hint">Syncs every minute. The agent finds the local repository.</p></div>
+      <p id="linear-status" class="hint" role="status"></p><p id="linear-error" class="hint" role="alert" hidden></p>
+      <div id="linear-connected" hidden><div class="settings-actions"><button type="button" id="reconcile-linear">Sync now</button><button type="button" id="linear-edit" class="quiet">Edit connection</button></div><p class="hint">Issues assigned to you with the <code>acp</code> label sync every minute. Move one to Todo to start work.</p></div>
       <form id="linear-connect-form"><label>Linear API key<input id="linear-key" type="password" autocomplete="off" placeholder="Paste a key, or leave blank to use your saved key"></label><p class="hint">Find your personal API key in Linear → Settings → Security &amp; access. It stays on this computer.</p><button id="linear-discover" class="primary" type="submit">Continue</button><button type="button" class="quiet linear-cancel" hidden>Cancel</button></form>
-      <form id="linear-setup-form" hidden><p id="linear-owner" class="hint"></p><div class="form-row"><label>Team<select id="linear-team" required></select></label><label>Agent<select id="linear-provider"><option value="codex">Codex</option><option value="claude">Claude Code</option><option value="demo">Demo</option></select></label></div><p id="linear-mapping-summary" class="hint"></p><label id="linear-create-label" class="checkbox-label" hidden><input id="linear-create-missing" type="checkbox" checked><span id="linear-create-description"></span></label><details id="linear-workflow-details"><summary>Customize status mapping</summary><div id="linear-mapping" class="linear-mapping"></div></details><p class="hint">Only issues assigned to you with the acp label will sync. ACP creates this label if needed.</p><button id="linear-save" class="primary" type="submit">Connect Linear</button><button type="button" class="quiet linear-cancel">Cancel</button></form>
+      <form id="linear-setup-form" hidden><p id="linear-owner" class="hint"></p><div class="form-row"><label>Team<select id="linear-team" required></select></label><label>Agent<select id="linear-provider"></select></label></div><p id="linear-mapping-summary" class="hint"></p><label id="linear-create-label" class="checkbox-label" hidden><input id="linear-create-missing" type="checkbox" checked><span id="linear-create-description"></span></label><details id="linear-workflow-details"><summary>Customize status mapping</summary><div id="linear-mapping" class="linear-mapping"></div></details><p class="hint">Only issues assigned to you with the acp label will sync. ACP creates this label if needed.</p><button id="linear-save" class="primary" type="submit">Connect Linear</button><button type="button" class="quiet linear-cancel">Cancel</button></form>
     </section>
     <details id="settings-advanced"><summary>Advanced</summary>
       <details id="linear-webhook-details" hidden><summary>Instant updates</summary><p id="linear-webhook-status" class="hint"></p><form id="linear-webhook-form"><p class="hint">Optional: run <code>acp hooks</code> and forward port <strong>8766</strong> through an HTTPS tunnel. Keep the board on port 8765 private. The listener and tunnel must stay running.</p><label>Public webhook URL<input id="linear-webhook-url" type="url" required placeholder="https://your-tunnel.example/hooks/linear"></label><button id="linear-register" type="submit">Register webhook</button><p class="hint">Requires a Linear workspace admin. ACP saves the signing secret automatically.</p></form></details>
-      <details id="linear-import-details" hidden><summary>Sync a specific issue</summary><form id="linear-form"><div class="form-row"><label>Issue ID<input name="issue_id" required placeholder="ENG-123"></label><label>Agent<select name="provider"><option value="codex">Codex</option><option value="claude">Claude Code</option><option value="demo">Demo</option></select></label></div><label>Local Git repository (optional)<input name="repo_path" placeholder="Let the agent find the repository"></label><p class="hint">The issue must be assigned to you and have the acp label.</p><button type="submit">Sync issue</button></form></details>
+      <details id="linear-import-details" hidden><summary>Sync a specific issue</summary><form id="linear-form"><div class="form-row"><label>Issue ID<input name="issue_id" required placeholder="ENG-123"></label><label>Agent<select name="provider"></select></label></div><label>Local Git repository (optional)<input name="repo_path" placeholder="Let the agent find the repository"></label><p class="hint">The issue must be assigned to you and have the acp label.</p><button type="submit">Sync issue</button></form></details>
       <details><summary>Linear reply commands</summary><p class="hint">While Waiting on Input, any new human comment resumes the agent. Use <code>/wait question</code> to pause or <code>/changes feedback</code> to request changes on a review.</p></details>
       <details><summary>Event subscriptions</summary><p class="hint">Receive durable HTTP events. Deduplicate by event ID.</p><div id="subscription-list"></div><form id="subscription-form"><label>Webhook URL<input name="url" required type="url" placeholder="http://127.0.0.1:9000/events"></label><label>Event patterns<input name="types" value="task.state_changed,comment.*" required></label><label>Signing secret (optional)<input name="secret" type="password" autocomplete="new-password"></label><button type="submit">Subscribe</button></form></details>
       <details id="delivery-details"><summary id="delivery-summary">Delivery diagnostics</summary><div id="delivery-list"></div></details>
