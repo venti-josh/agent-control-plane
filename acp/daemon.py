@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
@@ -15,10 +16,19 @@ from urllib.parse import urlparse
 
 import httpx
 import uvicorn
+from dotenv import dotenv_values
 from fastapi import HTTPException, Request
 
-from . import overlay
+from . import claude_activity, overlay
 from .config import Settings, config_path
+
+AGENTS = ('claude', 'codex')
+
+
+def which(command):
+    """An absolute path to the executable (a relative PATH entry gives a relative one), or None."""
+    path = shutil.which(command)
+    return os.path.abspath(path) if path else None
 
 
 class ACPServer(uvicorn.Server):
@@ -29,18 +39,32 @@ class ACPServer(uvicorn.Server):
 
 
 def setup() -> dict:
+    """Create the configuration once, then connect ACP to every agent CLI that is installed."""
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    found = {name: which(name) for name in AGENTS}
+    created = False
     try:
         with open(path, 'x', opener=lambda p, flags: os.open(p, flags, 0o600)) as file:
+            provider = next((name for name in AGENTS if found[name]), 'claude')
             file.write('# ACP user configuration. Environment variables override these values.\n'
-                       'DEFAULT_PROVIDER=demo\nDEFAULT_REPO=\n'
+                       f'DEFAULT_PROVIDER={provider}\nDEFAULT_REPO=\n'
                        'ACP_URL=http://127.0.0.1:8765\n'
-                       'CLAUDE_COMMAND=claude\nCODEX_COMMAND=codex\n')
+                       f'CLAUDE_COMMAND={found["claude"] or "claude"}\n'
+                       f'CODEX_COMMAND={found["codex"] or "codex"}\n')
+        created = True
     except FileExistsError:
         pass
     settings = Settings.from_env()
-    return {'config': str(path), 'data': str(settings.data_dir)}
+    # Detect what ACP would actually run: an existing configuration may name an agent outside PATH.
+    commands = {'claude': settings.claude_command, 'codex': settings.codex_command}
+    found = {name: which(command) for name, command in commands.items()}
+    values = {**{k: v for k, v in dotenv_values(path).items() if v is not None}, **os.environ}
+    enabled = values.get('ACP_ACTIVITY_HOOKS', '1').strip().lower() not in {'0', 'false', 'no', 'off'}
+    return {'config': str(path), 'data': str(settings.data_dir), 'created': created,
+            'agents': {name: {'command': found[name] or commands[name], 'found': bool(found[name])}
+                       for name in AGENTS},
+            'hooks': claude_activity.setup_hooks(settings.data_dir, sys.executable, found, enabled)}
 
 
 @contextmanager

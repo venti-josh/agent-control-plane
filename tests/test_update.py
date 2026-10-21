@@ -29,7 +29,13 @@ def tools(tmp_path, monkeypatch):
                   'elif sys.argv[1:3] == ["tool", "install"]:\n'
                   f'    json.dump({{**state, "installed": True}}, open({str(state)!r}, "w"))\n')
     acp = bin_dir / 'acp'
-    acp.write_text(prelude.replace('TOOL', '"acp"') + 'print("{}")\n')
+    # The new setup reports its hooks from 0.1.6 on; an older release's setup prints something else.
+    acp.write_text(prelude.replace('TOOL', '"acp"') +
+                   'if sys.argv[1:] == ["setup"] and state["version"] >= "0.1.6":\n'
+                   '    print(json.dumps({"hooks": {"codex": {"status": "failed: Invalid Codex hooks.json; left unchanged"},'
+                   ' "claude": {"status": "updated"}}}))\n'
+                   'elif sys.argv[1:] == ["setup"]: print("Configured.")\n'
+                   'else: print("{}")\n')
     python = tool_dir / 'acp' / 'bin' / 'python'
     python.write_text(prelude.replace('TOOL', '"python"') + 'print(state["version" if state["installed"] else "before"])\n')
     for path in (uv, acp, python):
@@ -94,6 +100,10 @@ def test_release_update_verifies_then_stops_installs_and_restarts_what_ran(setti
     assert install[1][6].endswith('constraints.txt') and install[1][7].endswith('acp-0.1.6-py3-none-any.whl')
     assert commands[3:] == [('uv', ['tool', 'dir', '--bin']), ('acp', ['setup'])] + query + \
         [('acp', ['start', '--port', '8777']), ('acp', ['overlay', 'start'])]
+    # The new setup's hook report rides along; a hook failure is a warning, not an update failure.
+    assert result['hooks'] == {'codex': {'status': 'failed: Invalid Codex hooks.json; left unchanged'},
+                               'claude': {'status': 'updated'}}
+    assert result['warnings'] == ['codex hooks failed: Invalid Codex hooks.json; left unchanged']
 
 
 def test_current_install_changes_nothing_and_check_has_no_side_effects(settings, tools):
@@ -115,6 +125,7 @@ def test_explicit_version_installs_that_release_even_when_older(settings, tools)
     client = release('0.1.3')
     result = update(settings, version='0.1.3', client=client)
     assert result['updated'] is True and result['installed_version'] == '0.1.3'
+    assert result['hooks'] is None and result['warnings'] == []
     assert not any(url.endswith('/latest/download/VERSION') for url in client.requested)
 
 

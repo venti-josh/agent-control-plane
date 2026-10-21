@@ -45,7 +45,7 @@ report = {'evidence_dir': str(base), 'provider': 'codex' if args.live else 'demo
 def install(expect_success=True):
     install_env = env.copy()
     if args.bootstrap:
-        install_env['PATH'] = '/usr/bin:/bin:/usr/sbin:/sbin'
+        install_env['PATH'] = f'{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin'
     # The script is delivered through stdin, matching the documented curl | sh command.
     downloaded = subprocess.run(['curl', '-fLsS', env['ACP_RELEASE_BASE_URL'] + '/install.sh'],
                                 check=True, capture_output=True)
@@ -56,6 +56,12 @@ def install(expect_success=True):
     assert (result.returncode == 0) == expect_success, (result.stdout + result.stderr).decode()
     if not expect_success:
         assert b'acp stop' in result.stderr
+    return (result.stdout + result.stderr).decode()
+
+
+def hook_state():
+    """Every hook file and manifest that exists; reinstalls and updates must leave them byte-identical."""
+    return {str(path): path.read_bytes() for path in hook_files if path.exists()}
 
 
 def cli(*argv, timeout=35):
@@ -97,23 +103,46 @@ def verify_output(task, trim=False):
     subprocess.run([sys.executable, '-c', code], cwd=workspace, check=True, timeout=15)
 
 
+# Separate Claude and Codex homes: never alter the user's hooks or hook trust. Fake agent CLIs
+# on PATH let setup detect both and hook them automatically. A live run needs the real Codex and
+# its own home, so it opts out of automatic hooks and installs the Codex ones explicitly instead.
+fake_bin, codex_home, claude_home = base / 'fake-bin', base / 'codex-home', base / 'claude-home'
+fake_bin.mkdir()
+codex_home.mkdir()
+hooks_file, settings_file = codex_home / 'hooks.json', claude_home / 'settings.json'
+manifest = base / 'home/data/codex-activity.hooks.json'
+hook_files = [hooks_file, manifest, settings_file, base / 'home/data/claude-activity.hooks.json']
+hooks_file.write_text(json.dumps({'hooks': {'Stop': [{'hooks': [
+    {'type': 'command', 'command': 'echo unrelated-hook'}]}]}}))
+if args.live:
+    env['ACP_ACTIVITY_HOOKS'] = '0'
+else:
+    for name in ('claude', 'codex'):
+        (fake_bin / name).write_text('#!/bin/sh\nexit 0\n')
+        (fake_bin / name).chmod(0o755)
+    env.update(PATH=f'{fake_bin}:{env["PATH"]}', CODEX_HOME=str(codex_home), CLAUDE_CONFIG_DIR=str(claude_home))
+
 try:
-    install()
+    output = install()
     config = base / 'home/config.env'
     original = config.read_bytes()
-    # Use a separate Codex home; never alter the user's hooks or hook trust.
-    codex_home = base / 'codex-home'
-    codex_home.mkdir()
-    hooks_file = codex_home / 'hooks.json'
-    hooks_file.write_text(json.dumps({'hooks': {'Stop': [{'hooks': [
-        {'type': 'command', 'command': 'echo unrelated-hook'}]}]}}))
-    cli('activity', 'install', '--codex-home', str(codex_home))
-    hooks_before = hooks_file.read_bytes()
-    manifest = base / 'home/data/codex-activity.hooks.json'
-    manifest_before = manifest.read_bytes()
-    install()
-    assert hooks_file.read_bytes() == hooks_before
-    assert manifest.read_bytes() == manifest_before
+    if args.live:
+        assert 'skipped: ACP_ACTIVITY_HOOKS=0' in output and 'trust the ACP handlers' not in output, output
+        cli('activity', 'install', '--codex-home', str(codex_home))
+    else:
+        text = config.read_text()
+        assert 'DEFAULT_PROVIDER=claude\n' in text, text
+        assert f'CLAUDE_COMMAND={fake_bin}/claude\n' in text and f'CODEX_COMMAND={fake_bin}/codex\n' in text, text
+        assert '"found": true' in output and '"status": "installed"' in output, output
+        assert 'open /hooks in the Codex CLI, review and trust the ACP handlers' in output, output
+        assert 'acp.claude_activity' in settings_file.read_text()
+    hooks = json.loads(hooks_file.read_text())['hooks']
+    assert hooks['Stop'][0]['hooks'][0]['command'] == 'echo unrelated-hook'
+    assert 'acp.codex_activity' in hooks['Stop'][1]['hooks'][0]['command']
+    hooks_before = hook_state()
+    assert set(hooks_before) == {str(path) for path in hook_files[:2 if args.live else 4]}
+    assert 'trust the ACP handlers' not in install()  # nothing changed, so no reminder
+    assert hook_state() == hooks_before
     assert config.read_bytes() == original
     info = cli('start', '--port', '0')
     assert info['healthy']
@@ -178,9 +207,8 @@ If changes are requested, update the SAME files/tests, rerun unittest, and resub
     install()
     assert config.read_bytes() == original
     cli('start', '--port', '0')
-    assert hooks_file.read_bytes() == hooks_before
-    assert manifest.read_bytes() == manifest_before
-    command = json.loads(manifest_before)['command']
+    assert hook_state() == hooks_before
+    command = json.loads(hooks_before[str(manifest)])['command']
     callback = subprocess.run(command, shell=True, input=json.dumps({
         'hook_event_name': 'SessionStart', 'session_id': 'installer-verification'}),
         text=True, capture_output=True, cwd=base / 'outside-repo', env=env, timeout=10)
@@ -193,10 +221,16 @@ If changes are requested, update the SAME files/tests, rerun unittest, and resub
     updated = cli('update', '--reinstall', timeout=240)
     assert updated['updated'] and updated['installed_version'] == check['target_version'], updated
     assert updated['restarted'] == {'service': True, 'overlay': False}, updated
+    expected = 'skipped: ACP_ACTIVITY_HOOKS=0' if args.live else 'already installed'
+    assert {name: entry['status'] for name, entry in updated['hooks'].items()} == \
+        {'codex': expected, 'claude': expected}, updated
+    assert updated['warnings'] == [], updated
+    assert hook_state() == hooks_before
     after = cli('status')
     assert after['healthy'] and after['url'] == running['url'] and after['pid'] != running['pid'], after
     assert config.read_bytes() == original
     report['update_verified'] = True
+    report['hooks'] = updated['hooks']
     report['reinstall_preserved_hooks'] = True
     report['installed_hook_callback_verified'] = True
     saved = cli('show', task_id)

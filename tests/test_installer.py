@@ -35,7 +35,8 @@ def test_installer_rejects_invalid_release_before_install(tmp_path, damage):
         (wheel if damage == 'wheel' else constraints).write_text('damaged')
     env = {**os.environ, 'ACP_RELEASE_BASE_URL': release.as_uri(),
            'UV_TOOL_DIR': str(tmp_path / 'tools'), 'UV_TOOL_BIN_DIR': str(tmp_path / 'bin'),
-           'ACP_HOME': str(tmp_path / 'home')}
+           'ACP_HOME': str(tmp_path / 'home'), 'HOME': str(tmp_path / 'user'),  # setup must never reach
+           'CLAUDE_CONFIG_DIR': str(tmp_path / 'user/.claude'), 'CODEX_HOME': str(tmp_path / 'user/.codex')}
     result = subprocess.run(['sh', str(ROOT / 'scripts/install.sh')], env=env,
                             capture_output=True, text=True, timeout=30)
     assert result.returncode != 0
