@@ -443,7 +443,9 @@ waits at a permission prompt (headless mode denied it instead): ACP posts a comm
 the run stays In Progress until you answer with `claude attach <id>` or the run limit is
 hit. Answers and change requests resume the same session (`claude --bg --resume
 <session>`), which keeps the ACP address it was started with; after changing `ACP_URL`
-or the port, use **Reset agent session** on tasks that already have one. ACP stops the
+or the port, use **Reset agent session** on tasks that already have one. Only the task's
+current session may report: an older session reopened by hand can read the task, but its
+`add_comment`, `request_input` and `submit_for_review` calls are refused. ACP stops the
 session with `claude stop <id>` when the run ends, when you cancel the task, when the run
 limit is hit, and when `acp stop` shuts the worker down. A session that ends its turn
 without calling `request_input` or `submit_for_review` fails the run with a message

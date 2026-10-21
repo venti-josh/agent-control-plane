@@ -627,6 +627,13 @@ def test_mcp_server_resolves_the_running_run(live_api, monkeypatch):
     comment = mcp_server.add_comment('from a resumed background session')
     assert comment['body'] == 'from a resumed background session'
     assert mcp_server.get_task()['state'] == 'in_progress'
+    svc.remember_session(run['id'], 'aaaaaaaa-1111-2222-3333-444444444444')
+    monkeypatch.setenv('CLAUDE_CODE_SESSION_ID', 'aaaaaaaa-1111-2222-3333-444444444444')  # Set by Claude.
+    assert mcp_server.add_comment('from the task\'s own session')['body'].endswith('own session')
+    monkeypatch.setenv('CLAUDE_CODE_SESSION_ID', 'bbbbbbbb-1111-2222-3333-444444444444')
+    with pytest.raises(RuntimeError, match='no longer the agent'):
+        mcp_server.add_comment('from a stale session that was reopened by hand')
+    assert mcp_server.get_task()['state'] == 'in_progress', 'reads are still allowed'
     monkeypatch.setenv('ACP_RUN_ID', 'a-stale-run')  # An explicit run id is still checked, as before.
     with pytest.raises(Exception, match='no longer active'):
         mcp_server.add_comment('stale')

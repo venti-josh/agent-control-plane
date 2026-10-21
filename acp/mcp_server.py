@@ -19,8 +19,14 @@ def call(path: str = "", payload: dict | None = None, request_id: str | None = N
 
 
 def current_run(base: str, task_id: str) -> str:
-    """A Claude background session keeps one saved MCP config across runs, so look the run up."""
+    """A Claude background session keeps one saved MCP config across runs, so look the run up.
+
+    Claude tells this server its session id; a session the task no longer uses must not report.
+    """
     task = request(base, 'GET', f'/api/tasks/{task_id}')
+    session = os.environ.get('CLAUDE_CODE_SESSION_ID')
+    if session and task.get('session_id') and task['session_id'] != session:
+        raise RuntimeError('This session is no longer the agent for this task; stop work and do not change the task')
     running = [run['id'] for run in task.get('runs', []) if run.get('status') == 'running']
     if not running:
         raise RuntimeError('This run is no longer active; stop work and do not change the task')
