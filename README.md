@@ -146,8 +146,10 @@ same process and session), or the silence timeouts below settle it. The owner is
 never used. Stored data matches Codex's and lives in `claude-activity.sqlite3`.
 
 Each source is summarized separately and then combined. `GET /api/activity` returns
-the combined counts plus `sources.codex` and `sources.claude`; the status line shows
-the split (for example `Codex 1 · Claude 2 running`). A source that was never observed,
+the combined counts plus `sources.codex` and `sources.claude`, each with that source's
+own counts; `message` carries only caveats (a source that is uncertain or failed to read,
+unconfirmed approvals). `acp activity status` prints the same JSON. Comet shows only the
+counters and the pet. A source that was never observed,
 is silent, or fails to read never blanks the other: counters go unavailable only when
 no source is trustworthy.
 

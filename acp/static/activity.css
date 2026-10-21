@@ -10,7 +10,8 @@
 .activity-counter{grid-row:2;display:flex;flex-direction:column;align-items:center;gap:4px;border:0;background:transparent;padding:0;min-width:0}
 .activity-counter strong{font-size:28px;line-height:1;font-weight:600;letter-spacing:-1px;font-variant-numeric:tabular-nums}.activity-counter span{font-size:10px;color:#504755}
 .activity-details{height:48px;padding:0 12px 8px}.activity-averages{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:0}.activity-averages>div{display:flex;flex-direction:column;gap:2px}.activity-averages dd{font-size:17px;letter-spacing:-.6px;margin:0;font-variant-numeric:tabular-nums;font-weight:550}.activity-averages dt{font-size:9px;color:#504755;order:2}
-.activity-status{position:absolute;bottom:4px;left:0;right:0;margin:0;text-align:center;font-size:9px;color:#80512c;pointer-events:none}.is-unavailable .activity-details{visibility:hidden}
+/* Only the unavailable state has text; it takes the hidden averages' row, so the minimized tile relies on the grey pet and dashes. */
+.activity-status{position:absolute;bottom:18px;left:0;right:0;margin:0;text-align:center;font-size:10px;color:#80512c;pointer-events:none}.is-collapsed .activity-status{display:none}.is-unavailable .activity-details{visibility:hidden}
 @media(prefers-reduced-motion:reduce){.activity-overlay *{animation:none!important;transition:none!important}}
 body.native-overlay{margin:0;padding:0;background:transparent;overflow:hidden}
 .native-overlay .activity-overlay{position:relative;left:auto!important;top:auto!important;max-width:none;box-shadow:none;background:transparent}
