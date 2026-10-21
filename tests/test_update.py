@@ -213,3 +213,27 @@ def test_cli_reports_version_and_update_options():
     assert result.returncode == 0 and result.stdout.strip() == f'acp {__version__}'
     result = subprocess.run([sys.executable, '-m', 'acp.cli', 'update', '--help'], capture_output=True, text=True, timeout=30)
     assert all(flag in result.stdout for flag in ['--version', '--source', '--check', '--reinstall', '--force'])
+
+
+def test_find_uv_prefers_the_newest_uv_and_keeps_path_on_ties(tmp_path, monkeypatch):
+    """The uv on PATH can predate the lockfile's required-version; the bundled one keeps up."""
+    from acp import update
+    home = tmp_path / 'home'
+    (home / 'installer' / 'uv').mkdir(parents=True)
+    (tmp_path / 'bin').mkdir()
+    on_path, bundled = tmp_path / 'bin' / 'uv', home / 'installer' / 'uv' / 'uv'
+    on_path.write_text('#!/bin/sh\necho "uv 0.11.7 (9d177269e 2026-04-15 aarch64-apple-darwin)"\n')
+    bundled.write_text('#!/bin/sh\necho "uv 0.13.1 (62faed335 2026-10-13 aarch64-apple-darwin)"\n')
+    for path in (on_path, bundled):
+        path.chmod(0o755)
+    monkeypatch.setattr('acp.update.shutil.which', lambda name: str(on_path))
+    monkeypatch.setattr('acp.update.user_home', lambda: home)
+    assert update.find_uv() == str(bundled)
+    bundled.write_text('#!/bin/sh\necho "uv 0.11.7"\n')
+    assert update.find_uv() == str(on_path)
+    bundled.write_text('#!/bin/sh\necho "not a version"\n')
+    assert update.find_uv() == str(on_path)
+    monkeypatch.setattr('acp.update.shutil.which', lambda name: None)
+    bundled.unlink()
+    with pytest.raises(RuntimeError, match='uv is required'):
+        update.find_uv()
