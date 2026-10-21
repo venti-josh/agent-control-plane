@@ -168,6 +168,16 @@ async def background_sessions(settings: Settings) -> dict[str, dict]:
     return {entry["id"]: entry for entry in json.loads(out) if isinstance(entry, dict) and entry.get("id")}
 
 
+def job_detail(short: str) -> str:
+    """Claude's own reason a background session settled, such as "exit 1 before init", if it kept one."""
+    home = Path(os.getenv("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))).expanduser()
+    try:
+        detail = json.loads((home / "jobs" / short / "state.json").read_text()).get("detail")
+    except (OSError, ValueError, AttributeError):
+        return ""
+    return detail.strip() if isinstance(detail, str) else ""
+
+
 async def stop_session(settings: Settings, short: str, note) -> bool:
     """`claude stop`, then confirm the registry shows no pid. True means the session is still live."""
     for _ in range(2):
@@ -446,6 +456,12 @@ class CLIRunner:
                         # The ACP tools answer before the turn can end: re-read the task after observing.
                         if service.store.one("SELECT state FROM tasks WHERE id=?", (task["id"],))["state"] in TERMINAL:
                             continue
+                        if observed == "exited" and entry and entry.get("state") == "failed":
+                            # Claude settled the session as failed; it can die before it ever starts.
+                            detail = job_detail(short)
+                            note("job", detail or "failed without a detail")
+                            raise RuntimeError(f"Claude background session {short} failed"
+                                               f"{': ' + detail if detail else ''}. See the run log.")
                         misses = misses + 1 if observed == "exited" else 0
                         # Right after launch the registry can list the session before its pid, and
                         # idle before the prompt is picked up; a brief registry gap is not an exit either.

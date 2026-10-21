@@ -134,6 +134,7 @@ def fake_bg_cli(tmp_path, monkeypatch):
     acp.mcp_server does, then stays alive idle until `stop`, as a real session would.
     """
     monkeypatch.setattr(runners, 'SETTLE_SECONDS', 0.3)  # The fake session never exits on its own.
+    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(tmp_path / 'claude-home'))  # Where Claude keeps job records.
     state = tmp_path / 'claude-state'
     state.mkdir()
     path = tmp_path / 'fake-claude'
@@ -248,6 +249,14 @@ else:
         print(f'note: started a copy of that conversation as {entry["id"]}.')
 entry.update(cwd=os.getcwd(), kind='background', startedAt=int(time.time() * 1000))
 save(entry)
+if '[crash]' in prompt:  # A worker that dies during startup is settled as failed, with no pid.
+    entry['state'] = 'failed'
+    save(entry)
+    job = Path(os.environ['CLAUDE_CONFIG_DIR']) / 'jobs' / entry['id']
+    job.mkdir(parents=True)
+    (job / 'state.json').write_text(json.dumps({'state': 'failed', 'detail': 'exit 1 before init'}))
+    sys.stdout.buffer.write(f'backgrounded · {entry["id"]} · {entry["name"]}\n'.encode('utf-8'))
+    sys.exit(0)
 worker = subprocess.Popen([sys.executable, sys.argv[0], 'worker', entry['id']], cwd=os.getcwd(),
                           start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                           stderr=(state / f'{entry["id"]}.err').open('w'))
@@ -452,6 +461,21 @@ async def test_background_session_exit_without_report_fails(live_api, git_repo, 
     assert task['state'] == 'waiting_on_input'
     assert 'exited without reporting' in task['last_error'] and '--resume' in task['last_error']
     assert task['runs'][0]['status'] == 'failed'
+
+
+async def test_background_session_failure_reports_claudes_reason(live_api, git_repo, fake_bg_cli):
+    svc = live_api
+    svc.settings.claude_command = fake_bg_cli
+    task = svc.create_task('Crash', description='[crash]', provider='claude', state='todo', repo_path=str(git_repo))
+    started = time.monotonic()
+    await Worker(svc).run_once()
+    task = svc.get_task(task['id'])
+    session = next(iter(background_state(fake_bg_cli)['sessions'].values()))
+    assert task['state'] == 'waiting_on_input'
+    assert task['runs'][0]['status'] == 'failed'
+    assert task['last_error'] == f"Claude background session {session['id']} failed: exit 1 before init. " \
+                                 f"See the run log."
+    assert time.monotonic() - started < 10  # A settled failure does not wait out the startup grace period.
 
 
 async def test_background_turn_without_report_fails_and_stops_session(live_api, git_repo, fake_bg_cli):
