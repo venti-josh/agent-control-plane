@@ -52,12 +52,13 @@ On macOS the installer builds Comet, the native floating panel, and `acp start`
 opens it once the service is up; `acp stop` closes it, and `acp status` reports it
 under `comet`. Building needs Apple's command line tools (`xcode-select --install`).
 Without them the install and `acp start` still succeed and say that Comet was
-skipped; run `acp overlay build` once the tools are present. The same command
-rebuilds Comet after its source changes (`acp update` does this on restart).
+skipped; once the tools are present, run `acp start` again (or `acp overlay build`
+to compile without opening it). `acp overlay build` also rebuilds Comet after its
+source changes, as `acp start` does after `acp update`.
 Set `ACP_OVERLAY=0` in the environment or `config.env` to keep Comet out of
 `acp start`; `acp overlay start` and `acp overlay stop` remain available as manual
-controls either way. In a checkout, use `uv run --locked acp overlay build` and
-`uv run --locked acp start`.
+controls either way, and `acp stop` still closes it. In a checkout, use
+`uv run --locked acp overlay build` and `uv run --locked acp start`.
 
 The panel stays above ordinary apps and can follow Spaces.
 Drag anywhere on the square tile to move it; click without dragging to expand or
@@ -186,9 +187,10 @@ acp update --source PATH      # Install from a local checkout (development)
 `acp update` downloads the release's wheel and constraints and verifies them
 against its `SHA256SUMS`, as the installer does. It checks everything before
 stopping anything. It then stops the service and the Comet overlay, reinstalls
-with `uv tool install --reinstall`, runs `acp setup`, and restarts only what was
-running (the service on its previous port, and with it Comet, rebuilt if its
-source changed). An installed release that is already
+with `uv tool install --reinstall`, runs `acp setup`, and restarts what was
+running: the service on its previous port, which opens Comet again unless
+`ACP_OVERLAY=0` (rebuilt if its source changed), or Comet alone if only it was
+running. An installed release that is already
 current is left alone unless you pass `--reinstall`. A `--source` checkout is
 always installed, since its code can differ under the same version number.
 

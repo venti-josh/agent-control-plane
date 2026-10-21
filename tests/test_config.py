@@ -41,3 +41,17 @@ def test_relative_config_paths_are_anchored_to_config_file(monkeypatch, tmp_path
     settings = Settings.from_env()
     assert settings.data_dir == config / 'state'
     assert settings.default_repo == str(config / 'repo')
+
+
+def test_comet_opt_out_comes_from_config_env_or_the_environment(monkeypatch, tmp_path):
+    config = tmp_path / 'config.env'
+    config.write_text('ACP_OVERLAY=0\n')
+    monkeypatch.setenv('ACP_CONFIG_FILE', str(config))
+    monkeypatch.setenv('ACP_DATA_DIR', str(tmp_path / 'data'))
+    monkeypatch.delenv('ACP_OVERLAY', raising=False)
+    assert Settings.from_env().overlay_enabled is False
+    monkeypatch.setenv('ACP_OVERLAY', '1')
+    assert Settings.from_env().overlay_enabled is True
+    config.write_text('')
+    monkeypatch.delenv('ACP_OVERLAY')
+    assert Settings.from_env().overlay_enabled is True

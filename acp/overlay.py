@@ -18,6 +18,8 @@ import httpx
 
 from .config import Settings
 
+SOURCE = Path(__file__).parent / 'native' / 'Leo.swift'
+
 
 def local_url(value: str) -> str:
     parsed = urlparse(value)
@@ -54,12 +56,17 @@ def status(settings: Settings) -> dict:
     return {'running': False, 'log': str(folder / 'leo.log')}
 
 
-SOURCE = Path(__file__).parent / 'native' / 'Leo.swift'
-CLT_HINT = 'Install the Apple command line tools (xcode-select --install), then run acp overlay build.'
-
-
 def executable_path(settings: Settings) -> Path:
     return directory(settings) / 'Leo.app' / 'Contents' / 'MacOS' / 'Leo'
+
+
+def developer_tools_missing() -> bool:
+    """/usr/bin/swiftc exists on every Mac as an Apple shim; without the command line tools,
+    running it opens the install dialog and fails. xcode-select answers quietly instead."""
+    try:
+        return subprocess.run(['xcode-select', '-p'], capture_output=True).returncode != 0
+    except OSError:
+        return True
 
 
 def build(settings: Settings) -> dict:
@@ -71,17 +78,20 @@ def build(settings: Settings) -> dict:
     executable = executable_path(settings)
     stamp = folder / 'build.sha256'
     digest = hashlib.sha256(SOURCE.read_bytes()).hexdigest()
-    if executable.is_file() and stamp.exists() and stamp.read_text() == digest:
-        return {'built': False, 'executable': str(executable)}
-    compiler = shutil.which('swiftc')
-    if not compiler:
-        return {'built': False, 'skipped': 'swiftc is not installed, so Comet was not built. ' + CLT_HINT}
-    compile_app(compiler, folder / 'Leo.app', executable)
-    stamp.write_text(digest)
+    with (folder / 'build.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if executable.is_file() and stamp.exists() and stamp.read_text() == digest:
+            return {'built': False, 'executable': str(executable)}
+        if developer_tools_missing() or not shutil.which('swiftc'):
+            return {'built': False, 'skipped': 'Comet was not built: the Apple command line tools are missing. '
+                    'Install them (xcode-select --install), then run acp start or acp overlay build.'}
+        compile_app(shutil.which('swiftc'), folder / 'Leo.app')
+        stamp.write_text(digest)
     return {'built': True, 'executable': str(executable)}
 
 
-def compile_app(compiler: str, app: Path, executable: Path) -> None:
+def compile_app(compiler: str, app: Path) -> None:
+    executable = app / 'Contents' / 'MacOS' / 'Leo'
     executable.parent.mkdir(parents=True, exist_ok=True)
     candidate = executable.with_suffix('.building')
     try:
@@ -110,8 +120,11 @@ def control(settings: Settings, action: str) -> dict:
         raise ValueError('Comet is not running. Use acp overlay start.')
     executable = executable_path(settings)
     request_id = secrets.token_hex(16)
-    result = subprocess.run([str(executable), '--control', str(directory(settings)), action, request_id],
-                            capture_output=True, text=True, timeout=5)
+    try:
+        result = subprocess.run([str(executable), '--control', str(directory(settings)), action, request_id],
+                                capture_output=True, text=True, timeout=5)
+    except subprocess.TimeoutExpired:
+        raise ValueError('Comet did not answer within 5 seconds. Check ' + str(directory(settings) / 'leo.log'))
     if result.returncode:
         raise ValueError('Could not contact Comet: ' + result.stderr[-1000:])
     deadline = time.monotonic() + 5

@@ -52,7 +52,10 @@ acp_install_main() (
         if ! acp_status=$("$acp_bin_dir/acp" status); then
             echo 'Cannot check the existing ACP service; resolve the error before upgrading.' >&2; exit 1
         fi
-        case "$acp_status" in *'"running": true'*) echo 'Run acp stop before reinstalling or upgrading.' >&2; exit 1 ;; esac
+        # The top-level key only: the nested comet object has its own "running".
+        if printf '%s\n' "$acp_status" | grep -q '^  "running": true'; then
+            echo 'Run acp stop before reinstalling or upgrading.' >&2; exit 1
+        fi
     fi
     "$acp_uv" tool install --python 3.14 --reinstall --constraints "$acp_tmp/constraints.txt" "$acp_tmp/$acp_wheel"
     "$acp_bin_dir/acp" setup
@@ -60,11 +63,12 @@ acp_install_main() (
     # Apple command line tools; without them (or with ACP_OVERLAY=0) the install still succeeds.
     if [ "$(uname -s)" = Darwin ] && [ "${ACP_OVERLAY:-1}" != 0 ]; then
         if acp_comet=$("$acp_bin_dir/acp" overlay build 2>"$acp_tmp/comet.log" </dev/null); then
+            # The result is json.dumps(indent=2): one key per line, and the skip reason has no quotes.
             acp_comet_skipped=$(printf '%s\n' "$acp_comet" | sed -n 's/^ *"skipped": "\(.*\)",*$/\1/p')
             if [ -n "$acp_comet_skipped" ]; then printf 'Comet: %s\n' "$acp_comet_skipped"
             else printf 'Comet is built; it opens with acp start (ACP_OVERLAY=0 opts out).\n'; fi
         else
-            printf 'Comet could not be built: %s\nFix that, then run acp overlay build.\n' "$(tail -n 1 "$acp_tmp/comet.log")"
+            printf 'Comet could not be built: %s\nRun acp overlay build to see the compiler output.\n' "$(head -n 1 "$acp_tmp/comet.log")"
         fi
     fi
     printf '\nACP %s installed.\nRun: %s/acp start\nThen: %s/acp open\n' "$acp_version" "$acp_bin_dir" "$acp_bin_dir"

@@ -115,7 +115,7 @@ class Settings:
             linear_states=json.loads(getenv("LINEAR_STATES_JSON", "{}")),
             github_webhook_secret=getenv("GITHUB_WEBHOOK_SECRET", ""),
             github_token=getenv("GITHUB_TOKEN", ""),
-            overlay_enabled=getenv("ACP_OVERLAY", "1").strip().lower() not in {"0", "false", "no", "off"},
+            overlay_enabled=getenv("ACP_OVERLAY", "1") != "0",
         )
         s.load_linear()
         if getenv('REPO_SEARCH_ROOTS') is not None:

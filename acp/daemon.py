@@ -17,6 +17,7 @@ import httpx
 import uvicorn
 from fastapi import HTTPException, Request
 
+from . import overlay
 from .config import Settings, config_path
 
 
@@ -98,39 +99,39 @@ def status(settings) -> dict:
 # Comet, the macOS overlay, rides along with the service: acp start opens it (building it first
 # when needed) and acp stop quits it. It never decides whether the service itself starts or stops.
 def comet_status(settings) -> dict:
+    """running, log, and why Comet is not running when it should be; acp overlay status has the details."""
     if sys.platform != 'darwin':
         return {'running': False, 'skipped': 'Comet is a native macOS overlay.'}
-    from . import overlay
     current = overlay.status(settings)
+    result = {'running': current['running'], 'log': current['log']}
     if not current['running'] and not settings.overlay_enabled:
-        current['skipped'] = 'ACP_OVERLAY=0'
-    return current
+        result['skipped'] = 'ACP_OVERLAY=0'
+    return result
 
 
 def comet_start(settings, url: str) -> dict:
     current = comet_status(settings)
     if current['running'] or current.get('skipped'):
         return current
-    from . import overlay
     try:
         built = overlay.build(settings)
         if built.get('skipped'):
             return {**current, 'skipped': built['skipped']}
-        return overlay.start(settings, url)
+        overlay.start(settings, url)
     except (ValueError, OSError) as exc:
         lines = str(exc).splitlines() or ['Comet did not start.']
-        return {**overlay.status(settings),
-                'skipped': lines[0] + (' Run acp overlay build for details.' if len(lines) > 1 else '')}
+        return {**current, 'error': lines[0] + (' Run acp overlay build for details.' if len(lines) > 1 else '')}
+    return comet_status(settings)
 
 
 def comet_stop(settings) -> dict:
     if sys.platform != 'darwin':
-        return {'running': False}
-    from . import overlay
+        return comet_status(settings)
     try:
-        return overlay.stop(settings)
+        overlay.stop(settings)
     except (ValueError, OSError) as exc:
-        return {**overlay.status(settings), 'error': str(exc)}
+        return {**comet_status(settings), 'error': str(exc)}
+    return comet_status(settings)
 
 
 def start(settings, port=None) -> dict:
