@@ -207,10 +207,18 @@ if args[:1] == ['worker']:
     if '[late-pid]' in task['description']:  # The registry lists a session before its pid appears.
         time.sleep(0.4)
         current = load(args[1]); current['pid'] = os.getpid(); save(current)
+    if '[slow-start]' in task['description']:  # The pid appears late, then idle before the prompt is picked up.
+        time.sleep(0.8)
+        current = load(args[1]); current.update(pid=os.getpid(), status='idle'); save(current)
+        time.sleep(0.3)
+        status('busy', 'working')
     # The saved MCP config has no run id; resolve the running run as acp.mcp_server does.
     run_id = env.get('ACP_RUN_ID') or next(r['id'] for r in task['runs'] if r['status'] == 'running')
     desc = task['description']
     time.sleep(0.3)  # Stay busy long enough to be observed, as a real session would.
+    if '[crash-after-start]' in desc:  # Listed as working, without its pid, after the worker died.
+        current = load(args[1]); current.pop('pid'); save(current)
+        sys.exit(1)
     if '[hang]' in desc:
         time.sleep(90)
     if '[exit]' in desc:
@@ -256,8 +264,12 @@ else:
         print(f'note: started a copy of that conversation as {entry["id"]}.')
 entry.update(cwd=os.getcwd(), kind='background', startedAt=int(time.time() * 1000))
 save(entry)
-if '[crash' in prompt:  # Listed as working without a pid, then settled as failed when the worker dies starting up.
-    entry.update(state='working', failAt=time.time() + 0.5, record='[crash]' in prompt)
+starts = {'[crash]': 0.5, '[crash-no-record]': 0.5, '[slow-crash]': 1.5, '[stuck-start]': None}
+mode = next((m for m in starts if m in prompt), None)
+if mode:  # Listed as working without a pid, then settled as failed when the worker dies starting up.
+    entry.update(state='working', record=mode != '[crash-no-record]')
+    if starts[mode] is not None:
+        entry['failAt'] = time.time() + starts[mode]
     save(entry)
     sys.stdout.buffer.write(f'backgrounded · {entry["id"]} · {entry["name"]}\n'.encode('utf-8'))
     sys.exit(0)
@@ -265,7 +277,7 @@ worker = subprocess.Popen([sys.executable, sys.argv[0], 'worker', entry['id']], 
                           start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                           stderr=(state / f'{entry["id"]}.err').open('w'))
 entry.update(status='busy', state='working')
-if '[late-pid]' not in prompt:
+if '[late-pid]' not in prompt and '[slow-start]' not in prompt:
     entry['pid'] = worker.pid
 save(entry)
 with (state / 'launches.jsonl').open('a') as f:
@@ -480,6 +492,57 @@ async def test_background_session_failure_reports_claudes_reason(live_api, git_r
     assert task['runs'][0]['status'] == 'failed'
     assert task['last_error'] == f"Claude background session {session['id']} failed{reason}. See the run log."
     assert time.monotonic() - started < 10  # A settled failure does not wait out the startup grace period.
+
+
+async def test_background_slow_startup_failure_still_reports_claudes_reason(live_api, git_repo, fake_bg_cli,
+                                                                            monkeypatch):
+    monkeypatch.setattr(runners, 'STARTUP_GRACE_SECONDS', 0.3)  # Claude settles the session after the grace.
+    svc = live_api
+    svc.settings.claude_command = fake_bg_cli
+    task = svc.create_task('Slow crash', description='[slow-crash]', provider='claude', state='todo',
+                           repo_path=str(git_repo))
+    await Worker(svc).run_once()
+    task = svc.get_task(task['id'])
+    session = next(iter(background_state(fake_bg_cli)['sessions'].values()))
+    assert task['last_error'] == f"Claude background session {session['id']} failed: exit 1 before init. " \
+                                 f"See the run log."
+
+
+async def test_background_stuck_startup_gives_up_at_the_startup_limit(live_api, git_repo, fake_bg_cli, monkeypatch):
+    monkeypatch.setattr(runners, 'STARTUP_GRACE_SECONDS', 0.3)
+    monkeypatch.setattr(runners, 'STARTUP_LIMIT_SECONDS', 1)
+    svc = live_api
+    svc.settings.claude_command = fake_bg_cli
+    svc.settings.run_timeout_seconds = 5  # Waiting for Claude without a limit would end here instead.
+    task = svc.create_task('Stuck', description='[stuck-start]', provider='claude', state='todo',
+                           repo_path=str(git_repo))
+    await Worker(svc).run_once()
+    task = svc.get_task(task['id'])
+    assert task['runs'][0]['status'] == 'failed'
+    assert 'exited without reporting' in task['last_error']
+
+
+async def test_background_slow_start_keeps_the_grace_after_the_worker_starts(live_api, git_repo, fake_bg_cli,
+                                                                            monkeypatch):
+    monkeypatch.setattr(runners, 'STARTUP_GRACE_SECONDS', 0.3)  # The worker starts after the grace from launch.
+    svc = live_api
+    svc.settings.claude_command = fake_bg_cli
+    task = svc.create_task('Slow start', description='[slow-start]', provider='claude', state='todo',
+                           repo_path=str(git_repo))
+    await Worker(svc).run_once()
+    task = svc.get_task(task['id'])
+    assert task['state'] == 'ready_for_review', task['last_error']
+
+
+async def test_background_crash_after_start_does_not_wait_for_the_startup_limit(live_api, git_repo, fake_bg_cli):
+    svc = live_api
+    svc.settings.claude_command = fake_bg_cli
+    svc.settings.run_timeout_seconds = 5  # Treating the dead session as still starting would end here instead.
+    task = svc.create_task('Crash after start', description='[crash-after-start]', provider='claude',
+                           state='todo', repo_path=str(git_repo))
+    await Worker(svc).run_once()
+    task = svc.get_task(task['id'])
+    assert 'exited without reporting' in task['last_error']
 
 
 async def test_background_turn_without_report_fails_and_stops_session(live_api, git_repo, fake_bg_cli):

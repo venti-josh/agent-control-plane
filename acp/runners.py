@@ -48,6 +48,8 @@ CLAUDE_TOOLS = ("Read,Edit,Write,Glob,Grep,Bash,mcp__acp__get_task,"
                 "mcp__acp__add_comment,mcp__acp__request_input,mcp__acp__submit_for_review")
 TERMINAL = {"waiting_on_input", "ready_for_review"}
 SETTLE_SECONDS = 3  # After the agent reports, let its final tool calls land before ending the run.
+STARTUP_GRACE_SECONDS = 30  # A Claude background session may look idle or absent this long after it starts.
+STARTUP_LIMIT_SECONDS = 120  # A session listed as working without a pid gets this long after launch to start.
 
 
 def agent_environment(*hide: str) -> dict:
@@ -426,6 +428,7 @@ class CLIRunner:
                 status = None
                 failures = misses = 0
                 next_poll = 0.0
+                grace_from = started  # Restarts while Claude still lists the session as starting.
                 while True:
                     if service.store.one("SELECT stop_requested FROM runs WHERE id=?", (run["id"],))["stop_requested"]:
                         break
@@ -464,10 +467,15 @@ class CLIRunner:
                             note("job", detail or "failed without a detail")
                             raise RuntimeError(f"Claude background session {short} failed"
                                                f"{': ' + detail if detail else ''}. See the run log.")
-                        misses = misses + 1 if observed == "exited" else 0
+                        # Until its worker starts, Claude lists the session as working without a pid.
+                        starting = (entry and not entry.get("pid") and entry.get("state") == "working"
+                                    and not seen_busy and time.monotonic() - started < STARTUP_LIMIT_SECONDS)
+                        misses = misses + 1 if observed == "exited" and not starting else 0
+                        if starting:
+                            grace_from = time.monotonic()
                         # Right after launch the registry can list the session before its pid, and
                         # idle before the prompt is picked up; a brief registry gap is not an exit either.
-                        settled = seen_busy or time.monotonic() - started > 30
+                        settled = seen_busy or time.monotonic() - grace_from > STARTUP_GRACE_SECONDS
                         if observed == "busy":
                             seen_busy = True
                         elif observed == "idle" and settled:
