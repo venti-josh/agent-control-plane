@@ -176,6 +176,9 @@ if args[:1] == ['stop']:
     if not entry or not entry.get('pid'):
         print(f'no running background session {args[1]}', file=sys.stderr)
         sys.exit(1)
+    if (state / 'stop-fails').exists():
+        print('background service unreachable', file=sys.stderr)
+        sys.exit(1)
     os.kill(entry['pid'], signal.SIGKILL)
     entry.pop('pid'); entry.pop('status', None); entry['state'] = 'stopped'
     save(entry)
@@ -224,6 +227,8 @@ if (Path.cwd() / '.untrusted').exists():
     sys.exit(1)
 prompt = sys.stdin.read()
 assert 'TASK SNAPSHOT' in prompt
+if '[slow-launch]' in prompt:
+    time.sleep(2)
 resume = args[args.index('--resume') + 1] if '--resume' in args else None
 flags = [a for a in args[1:] if a.startswith('--') and a != '--resume']
 existing = next((e for e in entries() if e['sessionId'] == resume), None) if resume else None
@@ -499,6 +504,34 @@ async def test_background_server_stop_stops_session(live_api, git_repo, fake_bg_
     assert task['runs'][0]['status'] == 'interrupted'
     session = next(iter(background_state(fake_bg_cli)['sessions'].values()))
     assert session['state'] == 'stopped' and 'pid' not in session
+
+
+async def test_background_stop_failure_fails_the_run_loudly(live_api, git_repo, fake_bg_cli):
+    svc = live_api
+    svc.settings.claude_command = fake_bg_cli
+    (Path(fake_bg_cli).parent / 'claude-state' / 'stop-fails').write_text('')
+    task = svc.create_task('Unstoppable', description='[ask]', provider='claude', state='todo',
+                           repo_path=str(git_repo))
+    await Worker(svc).run_once()
+    task = svc.get_task(task['id'])
+    assert task['runs'][0]['status'] == 'failed'
+    session = next(iter(background_state(fake_bg_cli)['sessions'].values()))
+    assert session.get('pid'), 'the fake refused to stop, as a broken CLI would'
+    assert task['last_error'] == (f"Claude background session {session['id']} is still running after "
+                                  f"`claude stop`. Stop it with `claude stop {session['id']}` before retrying.")
+
+
+async def test_background_run_limit_covers_the_launch(live_api, git_repo, fake_bg_cli):
+    svc = live_api
+    svc.settings.claude_command = fake_bg_cli
+    svc.settings.run_timeout_seconds = .5
+    task = svc.create_task('Slow launch', description='[slow-launch]', provider='claude', state='todo',
+                           repo_path=str(git_repo))
+    before = time.monotonic()
+    await Worker(svc).run_once()
+    task = svc.get_task(task['id'])
+    assert task['runs'][0]['status'] == 'failed' and 'claude --bg did not finish within' in task['last_error']
+    assert time.monotonic() - before < 3, 'the launch itself is bounded by the run limit (1 s floor)'
 
 
 async def test_claude_call_timeout_names_the_command(tmp_path, settings):

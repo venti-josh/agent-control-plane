@@ -168,6 +168,22 @@ async def background_sessions(settings: Settings) -> dict[str, dict]:
     return {entry["id"]: entry for entry in json.loads(out) if isinstance(entry, dict) and entry.get("id")}
 
 
+async def stop_session(settings: Settings, short: str, note) -> bool:
+    """`claude stop`, then confirm the registry shows no pid. True means the session is still live."""
+    for _ in range(2):
+        try:
+            code, out, err = await claude(settings, "stop", short, timeout=30)
+            note("stop", last_line(out) or last_line(err))
+            entry = (await background_sessions(settings)).get(short)
+        except (OSError, ValueError, RuntimeError) as exc:
+            note("stop", f"claude stop failed: {exc}")
+        else:
+            if not (entry and entry.get("pid")):
+                return False
+        await asyncio.sleep(1)
+    return True
+
+
 def parse_event(provider: str, event: dict) -> tuple[str | None, str | None]:
     """Normalize just lifecycle information; raw JSONL remains available in logs."""
     session, error = None, None
@@ -361,18 +377,19 @@ class CLIRunner:
                 if task["session_id"]:
                     saved = next((s for s in (await background_sessions(settings)).values()
                                   if s.get("sessionId") == task["session_id"]), None)
-                if saved and saved.get("pid"):  # Resuming a live session would copy it.
-                    code, out, err = await claude(settings, "stop", saved["id"])
-                    note("stop", last_line(out) or last_line(err))
-                    if code:
-                        raise RuntimeError(f"claude stop {saved['id']} failed; stop that session and retry")
+                if saved and saved.get("pid") and await stop_session(settings, saved["id"], note):
+                    # Resuming a live session would copy it.
+                    raise RuntimeError(f"Claude session {saved['id']} is still running; "
+                                       f"stop it with `claude stop {saved['id']}` and retry")
                 # The prompt is delivered at launch, so the task must already be in progress.
                 service.mark_started(run["id"])
+                started = time.monotonic()
+                deadline = started + settings.run_timeout_seconds
                 # Markers inherited from a parent Claude session would turn transcript saving off.
                 code, out, err = await claude(settings, *background_args(settings, task, saved is not None),
                                               stdin=build_prompt(task, run).encode(), cwd=path,
                                               env=agent_environment("CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION"),
-                                              timeout=120)
+                                              timeout=max(1.0, min(120.0, deadline - time.monotonic())))
                 for line in out.splitlines() + err.splitlines():
                     note("launch", line)
                 match = re.search(r"backgrounded\W+([0-9a-f]{4,})", out)
@@ -384,13 +401,14 @@ class CLIRunner:
                     entry = (await background_sessions(settings)).get(short)
                     if entry and entry.get("sessionId"):
                         break
+                    if time.monotonic() > deadline:
+                        raise TimeoutError(f"Agent exceeded the {settings.run_timeout_seconds:g}-second run limit")
                     await asyncio.sleep(0.2)
                 else:
                     raise RuntimeError(f"claude agents does not list background session {short}")
                 session = entry["sessionId"]
                 service.remember_session(run["id"], session)
                 note("agents", json.dumps(entry))
-                started = time.monotonic()
                 terminal_since = None
                 seen_busy = False
                 status = None
@@ -399,7 +417,7 @@ class CLIRunner:
                 while True:
                     if service.store.one("SELECT stop_requested FROM runs WHERE id=?", (run["id"],))["stop_requested"]:
                         break
-                    if time.monotonic() - started > settings.run_timeout_seconds:
+                    if time.monotonic() > deadline:
                         raise TimeoutError(f"Agent exceeded the {settings.run_timeout_seconds:g}-second run limit")
                     state = service.store.one("SELECT state FROM tasks WHERE id=?", (task["id"],))["state"]
                     if state in TERMINAL:
@@ -444,12 +462,13 @@ class CLIRunner:
                                                f"`claude --resume {session}`.")
                     await asyncio.sleep(0.1)
             finally:
-                if short:
-                    try:
-                        code, out, err = await claude(settings, "stop", short, timeout=30)
-                        note("stop", last_line(out) or last_line(err))
-                    except (OSError, RuntimeError) as exc:
-                        note("stop", f"claude stop failed: {exc}")
+                if short and await stop_session(settings, short, note):
+                    # The run is over either way; a live session must not go unnoticed.
+                    message = (f"Claude background session {short} is still running after `claude stop`. "
+                               f"Stop it with `claude stop {short}` before retrying.")
+                    with service.store.transaction() as db:
+                        db.execute("UPDATE tasks SET last_error=? WHERE id=?", (message, task["id"]))
+                    raise RuntimeError(message)
 
 
 def signal_group(pgid: int, sig: signal.Signals) -> None:
