@@ -161,8 +161,10 @@ def start(settings: Settings, url: str = '') -> dict:
         token_file = folder / 'control.token'
         with open(token_file, 'w', opener=lambda p, flags: os.open(p, flags, 0o600)) as file:
             file.write(secrets.token_hex(32))
+        # A shell's DYLD_LIBRARY_PATH (e.g. /opt/homebrew/lib) replaces the system image codecs
+        # AppKit uses to draw the menu bar emoji, and Comet crashes before it can log anything.
         environment = {key: value for key, value in os.environ.items()
-                       if not key.startswith('LINEAR_') and key not in {'GITHUB_TOKEN', 'GITHUB_WEBHOOK_SECRET'}}
+                       if not key.startswith(('LINEAR_', 'DYLD_')) and key not in {'GITHUB_TOKEN', 'GITHUB_WEBHOOK_SECRET'}}
         with open(folder / 'leo.log', 'ab', opener=lambda p, flags: os.open(p, flags, 0o600)) as log:
             process = subprocess.Popen([str(executable), str(folder), origin], env=environment,
                                        stdin=subprocess.DEVNULL, stdout=log, stderr=log,
