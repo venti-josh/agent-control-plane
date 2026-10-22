@@ -910,10 +910,11 @@ def test_guard_exits_when_parent_pipe_closes(tmp_path):
         write_fd = -1
         assert proc.wait(timeout=5) == -signal.SIGKILL
         # Both processes are in the killed group. Linux may briefly retain the child as a
-        # zombie, and init can reap it at any moment, so read without checking first.
+        # zombie, and init can reap it at any moment: before the open (ENOENT) or between
+        # the open and the read (ESRCH). Either means the child is already gone.
         try:
             status = Path(f'/proc/{first["pid"]}/status').read_text()
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             status = None
         if status is not None:
             assert 'Z (zombie)' in status
