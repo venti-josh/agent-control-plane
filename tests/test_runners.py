@@ -909,10 +909,14 @@ def test_guard_exits_when_parent_pipe_closes(tmp_path):
         os.close(write_fd)
         write_fd = -1
         assert proc.wait(timeout=5) == -signal.SIGKILL
-        # Both processes are in the killed group; Linux may briefly retain the child as a zombie.
-        status = Path(f'/proc/{first["pid"]}/status')
-        if status.exists():
-            assert 'Z (zombie)' in status.read_text()
+        # Both processes are in the killed group. Linux may briefly retain the child as a
+        # zombie, and init can reap it at any moment, so read without checking first.
+        try:
+            status = Path(f'/proc/{first["pid"]}/status').read_text()
+        except FileNotFoundError:
+            status = None
+        if status is not None:
+            assert 'Z (zombie)' in status
     finally:
         if write_fd != -1:
             os.close(write_fd)
