@@ -177,7 +177,11 @@ if args == ['--help']:
     print('Usage: claude [options] [command] [prompt]\n  --bg, --background  Start the session in the background')
     sys.exit(0)
 if args[:1] == ['agents']:
-    print(json.dumps([e for e in entries() if '--all' in args or e.get('pid')]))
+    found = entries()
+    for e in found:
+        if e.get('pid'):
+            (state / f'{e["id"]}.listed').touch()  # Lets a worker act once it has been seen running.
+    print(json.dumps([e for e in found if '--all' in args or e.get('pid')]))
     sys.exit(0)
 if args[:1] == ['stop']:
     entry = next((e for e in entries() if e['id'] == args[1]), None)
@@ -207,10 +211,14 @@ if args[:1] == ['worker']:
     if '[late-pid]' in task['description']:  # The registry lists a session before its pid appears.
         time.sleep(0.4)
         current = load(args[1]); current['pid'] = os.getpid(); save(current)
-    if '[slow-start]' in task['description']:  # The pid appears late, then idle before the prompt is picked up.
+    if '[slow-start]' in task['description']:  # The pid appears late, and the session is idle when first listed.
         time.sleep(0.8)
         current = load(args[1]); current.update(pid=os.getpid(), status='idle'); save(current)
-        time.sleep(0.3)
+        listed = state / f'{args[1]}.listed'
+        for _ in range(500):  # Pick up the prompt once `agents` has listed the idle session with its pid.
+            if listed.exists():
+                break
+            time.sleep(0.02)
         status('busy', 'working')
     # The saved MCP config has no run id; resolve the running run as acp.mcp_server does.
     run_id = env.get('ACP_RUN_ID') or next(r['id'] for r in task['runs'] if r['status'] == 'running')
@@ -523,11 +531,13 @@ async def test_background_stuck_startup_gives_up_at_the_startup_limit(live_api, 
 
 async def test_background_slow_start_keeps_the_grace_after_the_worker_starts(live_api, git_repo, fake_bg_cli,
                                                                             monkeypatch):
-    # The worker's pid appears after the grace from launch, and it idles for 0.3 seconds before going
-    # busy: a grace that starts when the pid is first seen must outlast that idle plus a poll's jitter.
+    # The worker's pid appears after the grace from launch, and the session is idle when the first poll
+    # sees it started. Polls are a second apart, longer than the grace, so a grace that still ran from
+    # the last poll that saw the session starting would already be over at that first sighting.
     monkeypatch.setattr(runners, 'STARTUP_GRACE_SECONDS', 0.5)
     svc = live_api
     svc.settings.claude_command = fake_bg_cli
+    svc.settings.poll_seconds = 0.25  # The runner lists sessions every poll_seconds * 4.
     task = svc.create_task('Slow start', description='[slow-start]', provider='claude', state='todo',
                            repo_path=str(git_repo))
     await Worker(svc).run_once()
