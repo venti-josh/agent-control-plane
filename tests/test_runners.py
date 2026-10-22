@@ -523,7 +523,9 @@ async def test_background_stuck_startup_gives_up_at_the_startup_limit(live_api, 
 
 async def test_background_slow_start_keeps_the_grace_after_the_worker_starts(live_api, git_repo, fake_bg_cli,
                                                                             monkeypatch):
-    monkeypatch.setattr(runners, 'STARTUP_GRACE_SECONDS', 0.3)  # The worker starts after the grace from launch.
+    # The worker's pid appears after the grace from launch, and it idles for 0.3 seconds before going
+    # busy: a grace that starts when the pid is first seen must outlast that idle plus a poll's jitter.
+    monkeypatch.setattr(runners, 'STARTUP_GRACE_SECONDS', 0.5)
     svc = live_api
     svc.settings.claude_command = fake_bg_cli
     task = svc.create_task('Slow start', description='[slow-start]', provider='claude', state='todo',
