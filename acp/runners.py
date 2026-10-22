@@ -428,7 +428,8 @@ class CLIRunner:
                 status = None
                 failures = misses = 0
                 next_poll = 0.0
-                grace_from = started  # Restarts while Claude still lists the session as starting.
+                grace_from = started  # Restarts until the session is first seen started.
+                was_starting = False
                 while True:
                     if service.store.one("SELECT stop_requested FROM runs WHERE id=?", (run["id"],))["stop_requested"]:
                         break
@@ -471,8 +472,11 @@ class CLIRunner:
                         pending = entry and not entry.get("pid") and entry.get("state") == "working" and not seen_busy
                         starting = pending and time.monotonic() - started < STARTUP_LIMIT_SECONDS
                         misses = misses + 1 if observed == "exited" and not starting else 0
-                        if starting:
+                        if starting or was_starting:
+                            # Polls can be most of a grace apart, so the grace runs from the first
+                            # poll that sees the session started, not the last that saw it starting.
                             grace_from = time.monotonic()
+                        was_starting = bool(starting)
                         # Right after launch the registry can list the session before its pid, and
                         # idle before the prompt is picked up; a brief registry gap is not an exit either.
                         # A session that has not started by the startup limit gets no further grace.
