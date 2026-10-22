@@ -47,6 +47,11 @@ jobs:
                 core.setFailed('An unfinished draft exists; inspect and remove it before rerunning.');
                 return;
               }
+              if (data.target_commitish !== context.sha) {
+                core.setFailed(`${process.env.RELEASE_TAG} was already released from ${data.target_commitish}. ` +
+                  'Every merge to main publishes a release: bump pyproject.toml and acp/__init__.py and run uv lock.');
+                return;
+              }
               core.setOutput('pending', 'false');
             } catch (error) {
               if (error.status !== 404) throw error;

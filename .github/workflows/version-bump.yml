@@ -1,0 +1,23 @@
+name: Version bump
+
+# Every merge to main publishes a release, so a pull request must raise the
+# version above the base branch. This check is required by the main ruleset.
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  version-bump:
+    name: Version bump
+    runs-on: ubuntu-latest
+    env:
+      BASE_REF: ${{ github.base_ref }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the base branch
+        run: git fetch --no-tags --depth=1 origin "refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
+      - name: Require a version greater than the base branch
+        run: python3 scripts/check-version-bump.py "origin/$BASE_REF"
