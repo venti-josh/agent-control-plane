@@ -48,6 +48,8 @@ CLAUDE_TOOLS = ("Read,Edit,Write,Glob,Grep,Bash,mcp__acp__get_task,"
                 "mcp__acp__add_comment,mcp__acp__request_input,mcp__acp__submit_for_review")
 TERMINAL = {"waiting_on_input", "ready_for_review"}
 SETTLE_SECONDS = 3  # After the agent reports, let its final tool calls land before ending the run.
+STARTUP_GRACE_SECONDS = 30  # A Claude background session may look idle or absent this long after it starts.
+STARTUP_LIMIT_SECONDS = 120  # A session listed as working without a pid gets this long after launch to start.
 
 
 def agent_environment(*hide: str) -> dict:
@@ -166,6 +168,18 @@ async def background_sessions(settings: Settings) -> dict[str, dict]:
     if code:
         raise RuntimeError(f"claude agents failed: {last_line(err) or last_line(out)}")
     return {entry["id"]: entry for entry in json.loads(out) if isinstance(entry, dict) and entry.get("id")}
+
+
+def job_detail(short: str) -> str:
+    """Claude's own reason a background session failed, such as "exit 1 before init", if it kept one."""
+    from .claude_activity import config_home
+    try:
+        job = json.loads((config_home() / "jobs" / short / "state.json").read_text())
+    except (OSError, ValueError):
+        return ""
+    # Outside a failure the same field holds the prompt or a summary of the turn.
+    detail = job.get("detail") if isinstance(job, dict) and job.get("state") == "failed" else None
+    return detail.strip() if isinstance(detail, str) else ""
 
 
 async def stop_session(settings: Settings, short: str, note) -> bool:
@@ -414,6 +428,7 @@ class CLIRunner:
                 status = None
                 failures = misses = 0
                 next_poll = 0.0
+                grace_from = started  # Restarts while Claude still lists the session as starting.
                 while True:
                     if service.store.one("SELECT stop_requested FROM runs WHERE id=?", (run["id"],))["stop_requested"]:
                         break
@@ -446,10 +461,23 @@ class CLIRunner:
                         # The ACP tools answer before the turn can end: re-read the task after observing.
                         if service.store.one("SELECT state FROM tasks WHERE id=?", (task["id"],))["state"] in TERMINAL:
                             continue
-                        misses = misses + 1 if observed == "exited" else 0
+                        if observed == "exited" and entry and entry.get("state") == "failed":
+                            # Claude settled the session as failed; it can die before it ever starts.
+                            detail = job_detail(short)
+                            note("job", detail or "failed without a detail")
+                            raise RuntimeError(f"Claude background session {short} failed"
+                                               f"{': ' + detail if detail else ''}. See the run log.")
+                        # Until its worker starts, Claude lists the session as working without a pid.
+                        pending = entry and not entry.get("pid") and entry.get("state") == "working" and not seen_busy
+                        starting = pending and time.monotonic() - started < STARTUP_LIMIT_SECONDS
+                        misses = misses + 1 if observed == "exited" and not starting else 0
+                        if starting:
+                            grace_from = time.monotonic()
                         # Right after launch the registry can list the session before its pid, and
                         # idle before the prompt is picked up; a brief registry gap is not an exit either.
-                        settled = seen_busy or time.monotonic() - started > 30
+                        # A session that has not started by the startup limit gets no further grace.
+                        settled = (seen_busy or (pending and not starting)
+                                   or time.monotonic() - grace_from > STARTUP_GRACE_SECONDS)
                         if observed == "busy":
                             seen_busy = True
                         elif observed == "idle" and settled:
