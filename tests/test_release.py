@@ -50,3 +50,70 @@ def test_release_contains_only_current_version_and_valid_checksums(release_tree)
     for line in (release / 'SHA256SUMS').read_text().splitlines():
         digest, name = line.split('  ')
         assert hashlib.sha256((release / name).read_bytes()).hexdigest() == digest
+
+
+@pytest.fixture
+def bump_tree(tmp_path):
+    for directory in ('scripts', 'acp'):
+        (tmp_path / directory).mkdir()
+    shutil.copyfile(ROOT / 'scripts/check-version-bump.py', tmp_path / 'scripts/check-version-bump.py')
+    write_versions(tmp_path, '1.2.3')
+    git = ['git', '-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false']
+    subprocess.run([*git, 'init', '-q', '-b', 'main'], cwd=tmp_path, check=True)
+    subprocess.run([*git, 'add', '-A'], cwd=tmp_path, check=True)
+    subprocess.run([*git, 'commit', '-q', '-m', 'base'], cwd=tmp_path, check=True)
+    return tmp_path
+
+
+def write_versions(root, version, runtime=None, locked=None):
+    (root / 'pyproject.toml').write_text(f'[project]\nname = "acp"\nversion = "{version}"\n')
+    (root / 'acp/__init__.py').write_text(f'__version__ = "{runtime or version}"\n')
+    (root / 'uv.lock').write_text(
+        f'version = 1\n\n[[package]]\nname = "acp"\nversion = "{locked or version}"\n'
+        'source = { editable = "." }\n')
+
+
+def check_bump(root):
+    return subprocess.run([sys.executable, str(root / 'scripts/check-version-bump.py'), 'main'],
+                          cwd=root, text=True, capture_output=True)
+
+
+def test_bump_accepts_a_greater_version(bump_tree):
+    write_versions(bump_tree, '1.2.4')
+    result = check_bump(bump_tree)
+    assert result.returncode == 0, result.stderr
+    assert '1.2.3 -> 1.2.4' in result.stdout
+
+
+def test_bump_accepts_a_greater_minor_with_lower_patch(bump_tree):
+    write_versions(bump_tree, '1.3.0')
+    assert check_bump(bump_tree).returncode == 0
+
+
+@pytest.mark.parametrize('version', ['1.2.3', '1.2.2', '0.9.9'])
+def test_bump_rejects_unchanged_or_lower_versions(bump_tree, version):
+    write_versions(bump_tree, version)
+    result = check_bump(bump_tree)
+    assert result.returncode != 0
+    assert f'Version {version} must be greater than 1.2.3' in result.stderr
+
+
+def test_bump_rejects_mismatched_runtime_version(bump_tree):
+    write_versions(bump_tree, '1.2.4', runtime='1.2.3')
+    result = check_bump(bump_tree)
+    assert result.returncode != 0
+    assert 'must match' in result.stderr
+
+
+def test_bump_rejects_stale_lockfile(bump_tree):
+    write_versions(bump_tree, '1.2.4', locked='1.2.3')
+    result = check_bump(bump_tree)
+    assert result.returncode != 0
+    assert 'uv lock' in result.stderr
+
+
+def test_bump_rejects_malformed_version(bump_tree):
+    write_versions(bump_tree, '1.2.4rc1')
+    result = check_bump(bump_tree)
+    assert result.returncode != 0
+    assert 'X.Y.Z' in result.stderr

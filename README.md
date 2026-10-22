@@ -297,16 +297,23 @@ locally over HTTP, installs into isolated tool directories, exercises a task thr
 input and review, then checks stop/restart/reinstall persistence. It saves evidence
 under `.acp/install-smoke-*` and stops its service when finished.
 
-Merge the version change into `main`. The **CI and release** workflow runs only on
-pushes to `main`; feature branches, pull requests, and tag pushes do not run CI.
-It checks macOS and Linux with Python 3.11 and 3.14. If `vX.Y.Z` is not already
-published, it builds and smoke-tests the installed CLI on both platforms, then
-creates the tag at the tested commit and publishes the exact verified Linux assets.
-The smoke test runs its task with the hidden `demo` provider, a simulated agent that
-the API accepts but the UI and CLI do not offer, so it needs no agent credentials.
-Do not create a tag manually. Subsequent pushes with the same published version run
-checks but skip publication. To release again, increase both versions and run
-`uv lock`, then merge into `main`.
+Every merge into `main` publishes a release, so every pull request must raise the
+version. The **Version bump** workflow runs on pull requests to `main` and fails
+unless `pyproject.toml` is greater than the version on `main`, `acp/__init__.py`
+matches, and `uv.lock` records the new version (run `uv lock`). The `main` ruleset
+requires this check and an up-to-date branch, so a pull request that bumped to a
+version `main` has since reached must bump again. Run the check locally with
+`python3 scripts/check-version-bump.py origin/main`. Feature branches and tag pushes
+run no other CI.
+
+The **CI and release** workflow runs on pushes to `main`. It checks macOS and Linux
+with Python 3.11 and 3.14, builds and smoke-tests the installed CLI on both
+platforms, then creates the tag at the tested commit and publishes the exact
+verified Linux assets. The smoke test runs its task with the hidden `demo`
+provider, a simulated agent that the API accepts but the UI and CLI do not offer,
+so it needs no agent credentials. Do not create a tag manually. A push whose
+version is already released from another commit fails the workflow instead of
+skipping publication; rerunning the workflow of a released commit skips it.
 
 Publication is serialized and requires every check and smoke test to pass. API
 errors fail the workflow. Rerun a failed workflow from GitHub Actions; if an upload
