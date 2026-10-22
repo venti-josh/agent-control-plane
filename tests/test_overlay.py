@@ -115,26 +115,47 @@ def test_build_reports_a_failed_compile(settings, swiftc):
     assert not overlay.executable_path(settings).exists()
 
 
+class AnsweringService:
+    """Stands in for httpx.Client when the ACP service answers every route."""
+    def __init__(self, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        pass
+
+    def get(self, url):
+        return type('Response', (), {'raise_for_status': lambda self: None})()
+
+
 def test_start_refuses_when_comet_cannot_be_built(settings, monkeypatch):
     monkeypatch.setattr(overlay.sys, 'platform', 'darwin')
     monkeypatch.setattr(overlay, 'developer_tools_missing', lambda: True)
-
-    class Client:  # The service answers; only the build is missing.
-        def __init__(self, **kwargs):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            pass
-
-        def get(self, url):
-            return type('Response', (), {'raise_for_status': lambda self: None})()
-    monkeypatch.setattr(overlay.httpx, 'Client', Client)
+    monkeypatch.setattr(overlay.httpx, 'Client', AnsweringService)
     with pytest.raises(ValueError, match='xcode-select'):
         overlay.start(settings, 'http://127.0.0.1:1')
     assert not (settings.data_dir / 'overlay' / 'Leo.app').exists()
+
+
+def test_start_keeps_shell_library_overrides_out_of_comet(settings, monkeypatch):
+    # DYLD_LIBRARY_PATH=/opt/homebrew/lib swaps ImageIO's libPng for Homebrew's libpng,
+    # and Comet crashes drawing its menu bar emoji before it can log anything.
+    monkeypatch.setattr(overlay.sys, 'platform', 'darwin')
+    monkeypatch.setattr(overlay.httpx, 'Client', AnsweringService)
+    monkeypatch.setattr(overlay, 'build', lambda s: {'built': False, 'executable': '/bin/true'})
+    monkeypatch.setenv('DYLD_LIBRARY_PATH', '/opt/homebrew/lib')
+    monkeypatch.setenv('DYLD_FALLBACK_LIBRARY_PATH', '/opt/homebrew/lib')
+    launched = {}
+
+    def popen(command, env, **kwargs):
+        launched.update(env)
+        return type('Process', (), {'poll': lambda self: 0})()
+    monkeypatch.setattr(overlay.subprocess, 'Popen', popen)
+    with pytest.raises(ValueError, match='exited during startup'):
+        overlay.start(settings, 'http://127.0.0.1:1')
+    assert launched and not [key for key in launched if key.startswith('DYLD_')]
 
 
 def test_control_reports_an_unresponsive_comet_instead_of_crashing(settings, monkeypatch):
