@@ -70,6 +70,81 @@ const attempt = (fn) => async (event) => {
   finally { if (button) button.disabled = false; }
 };
 function safeLink(url, title=url) { return /^https?:\/\//i.test(url) ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>` : `<span>${esc(title)}</span>`; }
+// Markdown for task text (descriptions, comments, outputs). Every character is HTML-escaped
+// before any markup is added, so raw HTML in a body is shown, never executed.
+const httpUrl = (url) => /^https?:\/\//i.test(url) ? url : '';
+function mdInline(text) {
+  return text.split(/(`+)([^`\n]+?)\1/).map((part, i) => {
+    if (i % 3 === 1) return '';
+    if (i % 3 === 2) return `<code>${esc(part)}</code>`;
+    return esc(part)
+      .replace(/!?\[([^\]\n]*)\]\(&lt;([^&\n]+?)&gt;\)|!?\[([^\]\n]+)\]\(([^\s)]+)\)/g, (m, angleText, anglePath, text, url) => {
+        const dest = anglePath ?? url, label = angleText ?? text, safe = httpUrl(dest);
+        // Local evidence paths are shown as text: the browser cannot open them, and they never become attributes.
+        if (!safe) return anglePath ? `${label} <code>${dest}</code>` : m;
+        if (m.startsWith('!')) return `<img src="${safe}" alt="${label}" loading="lazy">`;
+        return `<a href="${safe}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+      })
+      .replace(/(^|[\s(])(https?:\/\/(?:&[a-z0-9#]+;|[^\s&<])+?)(?=[.,;:!?)]*(?:\s|$))/g, (_, pre, url) => `${pre}<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`)
+      .replace(/\*\*([^*\n]+?)\*\*|__([^_\n]+?)__/g, (_, a, b) => `<strong>${a ?? b}</strong>`)
+      .replace(/(^|[^\w*])\*([^*\n]+?)\*(?![\w*])/g, '$1<em>$2</em>')
+      .replace(/(^|[^\w_])_([^_\n]+?)_(?![\w_])/g, '$1<em>$2</em>')
+      .replace(/~~([^~\n]+?)~~/g, '<del>$1</del>');
+  }).join('');
+}
+const mdBlockStart = /^\s*(`{3,}|~{3,}|#{1,6}\s|>|[-*+]\s|\d+[.)]\s)/, mdRule = /^\s*([-*_])(\s*\1){2,}\s*$/;
+function md(text) {
+  const lines = String(text ?? '').replace(/\r\n?/g, '\n').split('\n'), out = [];
+  let i = 0;
+  const take = (test) => { const block = []; while (i < lines.length && test(lines[i])) block.push(lines[i++]); return block; };
+  const row = (line) => line.trim().replace(/^\||\|$/g, '').split('|').map(c => mdInline(c.trim()));
+  while (i < lines.length) {
+    const line = lines[i];
+    let m;
+    if (!line.trim()) { i++; continue; }
+    if ((m = /^\s*(`{3,}|~{3,})\s*(\S*)/.exec(line))) {
+      i++;
+      const body = take(l => !l.trim().startsWith(m[1]));
+      i++;
+      out.push(`<pre><code${m[2] ? ` class="lang-${esc(m[2])}"` : ''}>${esc(body.join('\n'))}</code></pre>`);
+    } else if ((m = /^\s*(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line))) {
+      i++; out.push(`<h${m[1].length}>${mdInline(m[2])}</h${m[1].length}>`);
+    } else if (mdRule.test(line)) {
+      i++; out.push('<hr>');
+    } else if (/^\s*>/.test(line)) {
+      out.push(`<blockquote>${md(take(l => /^\s*>/.test(l)).map(l => l.replace(/^\s*>\s?/, '')).join('\n'))}</blockquote>`);
+    } else if ((m = /^(\s*)([-*+]|\d+[.)])\s+/.exec(line))) {
+      const ordered = /\d/.test(m[2]), indent = m[1].length, items = [];
+      const marker = new RegExp(`^\\s{${indent}}([-*+]|\\d+[.)])\\s+(.*)$`);
+      while (i < lines.length) {
+        const item = marker.exec(lines[i]);
+        if (!item || /\d/.test(item[1]) !== ordered) break;
+        i++;
+        // Lines indented past the marker continue the item: nested lists, wrapped text, code.
+        const rest = take(l => l.trim() && l.search(/\S/) > indent).map(l => l.slice(Math.min(l.search(/\S/), indent + 2)));
+        const check = /^\[([ xX])\]\s+(.*)$/.exec(item[2]);
+        const head = check ? `<input type="checkbox" disabled${check[1] === ' ' ? '' : ' checked'}> ${mdInline(check[2])}` : mdInline(item[2]);
+        items.push(`<li${check ? ' class="task"' : ''}>${head}${rest.length ? md(rest.join('\n')) : ''}</li>`);
+      }
+      const tag = ordered ? 'ol' : 'ul', start = ordered && parseInt(m[2]) !== 1 ? ` start="${parseInt(m[2])}"` : '';
+      out.push(`<${tag}${start}>${items.join('')}</${tag}>`);
+    } else if (line.includes('|') && i + 1 < lines.length && /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/.test(lines[i + 1])) {
+      const header = row(line); i += 2;
+      const rows = take(l => l.includes('|')).map(row);
+      out.push(`<table><thead><tr>${header.map(c => `<th>${c}</th>`).join('')}</tr></thead>${rows.length ? `<tbody>${rows.map(r => `<tr>${header.map((_, c) => `<td>${r[c] ?? ''}</td>`).join('')}</tr>`).join('')}</tbody>` : ''}</table>`);
+    } else {
+      out.push(`<p>${take(l => l.trim() && !mdBlockStart.test(l) && !mdRule.test(l)).map(l => mdInline(l.trim())).join('<br>')}</p>`);
+    }
+  }
+  return out.join('');
+}
+// Board cards show a one-glance preview, so markdown syntax is stripped there rather than rendered.
+const plain = (text) => String(text ?? '')
+  .replace(/^\s*(`{3,}|~{3,})[^\n]*\n?/gm, '')
+  .replace(/^\s*(#{1,6}\s+|>\s?|[-*+]\s+(\[[ xX]\]\s+)?|\d+[.)]\s+)/gm, '')
+  .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+  .replace(/(\*\*|__|~~|`)(.+?)\1/g, '$2')
+  .replace(/(^|[^\w*])[*_]([^*_\n]+)[*_](?![\w*])/g, '$1$2');
 function runLabel(status) { return status || 'Not started'; }
 const decisionLabels = {accept: 'Accept', 'accept for session': 'Accept for session', decline: 'Decline'};
 function drawBoard() {
@@ -78,7 +153,7 @@ function drawBoard() {
   $('running-count').textContent = running ? `${running} running` : '';
   $('board').innerHTML = config.states.map(state => {
     const cards = tasks.filter(t => t.state === state.id);
-    return `<div class="lane" data-state="${state.id}" aria-label="${state.label}"><div class="lane-heading"><span class="lane-dot"></span>${state.label}<span class="lane-count">${cards.length}</span></div>${cards.map(t => `<button class="card" draggable="true" data-id="${t.id}" aria-label="Open ${esc(t.title)}"><span class="card-top"><span>${esc(t.linear_url ? 'LINEAR' : 'TASK')} ${t.id.slice(0,6).toUpperCase()}</span><span>···</span></span><span class="card-title">${esc(t.title)}</span><span class="card-desc">${esc(t.description)}</span><span class="card-bottom"><span class="provider ${esc(t.provider)}">${esc(providerLabel(t.provider))}</span><span class="task-status ${esc(t.state)}">${esc(state.label)}</span></span></button>`).join('') || '<div class="empty-lane">Drop a task here</div>'}</div>`;
+    return `<div class="lane" data-state="${state.id}" aria-label="${state.label}"><div class="lane-heading"><span class="lane-dot"></span>${state.label}<span class="lane-count">${cards.length}</span></div>${cards.map(t => `<button class="card" draggable="true" data-id="${t.id}" aria-label="Open ${esc(t.title)}"><span class="card-top"><span>${esc(t.linear_url ? 'LINEAR' : 'TASK')} ${t.id.slice(0,6).toUpperCase()}</span><span>···</span></span><span class="card-title">${esc(t.title)}</span><span class="card-desc">${esc(plain(t.description))}</span><span class="card-bottom"><span class="provider ${esc(t.provider)}">${esc(providerLabel(t.provider))}</span><span class="task-status ${esc(t.state)}">${esc(state.label)}</span></span></button>`).join('') || '<div class="empty-lane">Drop a task here</div>'}</div>`;
   }).join('');
   document.querySelectorAll('.card').forEach(card => {
     card.onclick = attempt(() => openTask(card.dataset.id));
@@ -125,7 +200,7 @@ function drawTask() {
   $('task-short-id').textContent = 'TASK ' + task.id.slice(0,8).toUpperCase();
   $('task-heading').textContent = task.title;
   const blocker = task.comments.find(c => c.id === task.blocker_comment_id);
-  $('task-summary').innerHTML = `<div class="meta"><span class="provider ${esc(task.provider)}">${esc(providerLabel(task.provider))}</span><span>${esc(config.states.find(s => s.id === task.state).label)}</span>${task.linear_url ? safeLink(task.linear_url,'Open in Linear ↗') : ''}${task.branch ? `<span>${esc(task.branch)}</span>` : ''}</div><p class="task-description">${esc(task.description)}</p>${blocker ? `<div class="blocker"><strong>${task.approval ? 'Codex needs your approval' : 'Waiting on your input'}</strong><br>${esc(blocker.body)}${task.approval ? `<div class="comment-actions">${task.approval.decisions.map(d => `<button type="button" data-decision="${esc(d)}"${d === 'accept' ? ' class="primary"' : ''}>${esc(decisionLabels[d] || d)}</button>`).join('')}</div>` : ''}</div>` : ''}${task.last_error ? `<p class="hint">Last run error: ${esc(task.last_error)}</p>` : ''}`;
+  $('task-summary').innerHTML = `<div class="meta"><span class="provider ${esc(task.provider)}">${esc(providerLabel(task.provider))}</span><span>${esc(config.states.find(s => s.id === task.state).label)}</span>${task.linear_url ? safeLink(task.linear_url,'Open in Linear ↗') : ''}${task.branch ? `<span>${esc(task.branch)}</span>` : ''}</div><div class="task-description md">${md(task.description)}</div>${blocker ? `<div class="blocker"><strong>${task.approval ? 'Codex needs your approval' : 'Waiting on your input'}</strong><div class="md">${md(blocker.body)}</div>${task.approval ? `<div class="comment-actions">${task.approval.decisions.map(d => `<button type="button" data-decision="${esc(d)}"${d === 'accept' ? ' class="primary"' : ''}>${esc(decisionLabels[d] || d)}</button>`).join('')}</div>` : ''}</div>` : ''}${task.last_error ? `<p class="hint">Last run error: ${esc(task.last_error)}</p>` : ''}`;
   const laneSelect = $('task-state');
   // Live events must not overwrite a lane the user selected but hasn't applied.
   const chosenLane = laneSelect.dataset.task === task.id && laneSelect.dataset.state === task.state
@@ -134,8 +209,8 @@ function drawTask() {
   laneSelect.dataset.task = task.id; laneSelect.dataset.state = task.state;
   $('cancel-task').disabled = !task.runs.some(r => ['queued','running'].includes(r.status));
   $('output-section').hidden = !task.artifacts.length;
-  $('task-outputs').innerHTML = task.artifacts.map(a => `<div class="output"><span class="chip">${esc(a.kind)}</span> ${a.kind === 'text' ? '' : safeLink(a.url)}<p>${esc(a.summary)}</p></div>`).join('');
-  $('task-comments').innerHTML = task.comments.map(c => `<div class="comment"><div class="comment-author"><strong>${esc(c.author)}${c.in_reply_to ? ' · reply' : ''}</strong><span>${time(c.created_at)}</span></div><div class="comment-body">${esc(c.body)}</div></div>`).join('') || '<p class="hint">Plans, questions, and feedback appear here.</p>';
+  $('task-outputs').innerHTML = task.artifacts.map(a => `<div class="output"><span class="chip">${esc(a.kind)}</span> ${a.kind === 'text' ? '' : safeLink(a.url)}<div class="md">${md(a.summary)}</div></div>`).join('');
+  $('task-comments').innerHTML = task.comments.map(c => `<div class="comment"><div class="comment-author"><strong>${esc(c.author)}${c.in_reply_to ? ' · reply' : ''}</strong><span>${time(c.created_at)}</span></div><div class="comment-body md">${md(c.body)}</div></div>`).join('') || '<p class="hint">Plans, questions, and feedback appear here.</p>';
   $('resume-task').hidden = task.state !== 'waiting_on_input';
   $('request-changes').hidden = task.state !== 'ready_for_review';
   $('task-runs').innerHTML = `<p class="hint">Session: ${esc(task.session_id || 'Not started')}<br>Workspace: ${esc(task.workspace || 'Managed by the agent')}</p>` + task.runs.map(r => {

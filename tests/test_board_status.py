@@ -42,7 +42,7 @@ tasks = [{...selected, run_status:input.outcome, run_started_at:selected.runs[0]
 drawBoard(); drawTask();
 `, context);
 process.stdout.write(JSON.stringify({board:nodes.board.innerHTML, summary:nodes['task-summary'].innerHTML,
-  history:nodes['task-runs'].innerHTML,
+  history:nodes['task-runs'].innerHTML, comments:nodes['task-comments'].innerHTML, outputs:nodes['task-outputs'].innerHTML,
   outcome:vm.runInContext('selected.runs[0].status',context)}));
 """
     result = subprocess.run(['node', '-e', script], input=json.dumps({
