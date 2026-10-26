@@ -453,9 +453,15 @@ are in `<data-dir>/board.sqlite3`.
 
 When the installed Claude Code CLI supports `claude --bg`, ACP runs each Claude task
 as a Claude background session instead of a headless `claude -p` process. The session
-is named after the task and listed by `claude agents` and in the Claude app. Attach
-with `claude attach <id>` to watch it or to answer a permission prompt; the run keeps
-going and the agent still reports through the ACP tools. A tool outside ACP's allowlist
+is named after the task and listed by `claude agents`. Attach with `claude attach <id>`
+to watch it or to answer a permission prompt; the run keeps going and the agent still
+reports through the ACP tools.
+
+The Claude desktop app does not show these sessions. Its Code view lists only the
+sessions the app starts itself; it never reads the CLI's background-session registry,
+and the CLI refuses `--desktop` together with `--bg`. To open a finished or stopped ACP
+session in the app, run `claude --desktop --resume <session>`: the app imports a copy of
+the transcript as its own session, while ACP keeps resuming the original. A tool outside ACP's allowlist
 waits at a permission prompt (headless mode denied it instead): ACP posts a comment and
 the run stays In Progress until you answer with `claude attach <id>` or the run limit is
 hit. Answers and change requests resume the same session (`claude --bg --resume

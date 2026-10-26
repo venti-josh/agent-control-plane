@@ -373,7 +373,7 @@ class CLIRunner:
             os.close(write_fd)
 
     async def run_background(self, service: TaskService, task: dict, run: dict, path: Path) -> None:
-        """Run the task as a `claude --bg` session: visible in `claude agents` and the Claude app.
+        """Run the task as a `claude --bg` session: visible in `claude agents`, not in the Claude app.
 
         Claude owns the process. ACP launches or resumes the session, watches `claude agents`
         and the task state, and stops the session with `claude stop` when the run ends.
