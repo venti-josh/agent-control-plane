@@ -63,14 +63,20 @@ def main():
                 dead_frame = pet.evaluate('(el) => el.toDataURL()')
                 page.clock.run_for(250)
                 assert pet.evaluate('(el) => el.toDataURL()') == dead_frame
+                # One running thread revives Comet before it has earned any 30-minute average.
+                emit('UserPromptSubmit', session='agent-1')
+                # This first transition proves the automatic five-second refresh works.
+                expect(tile).to_have_attribute('data-mood', 'sad', timeout=8000)
+                expect(page.locator('#activity-running')).to_have_text('1')
+                expect(page.locator('#activity-30m')).to_have_text('0.00')
+                page.screenshot(path=str(screenshot_dir / 'sad-running.png'))
                 # Real backend history drives every mood, including exact thresholds.
                 for count, mood in [(1, 'sad'), (2, 'happy'), (3, 'rainbow')]:
-                    emit('UserPromptSubmit', session=f'agent-{count}')
+                    if count != 1:
+                        emit('UserPromptSubmit', session=f'agent-{count}')
                     with monitor.connect() as db:
                         db.execute('UPDATE intervals SET start=? WHERE agent=?', (time.time() - 1900, f'agent-{count}'))
-                    if count != 1:
-                        page.evaluate('activityOverlay.refresh()')
-                    # First transition proves the automatic five-second refresh works.
+                    page.evaluate('activityOverlay.refresh()')
                     expect(tile).to_have_attribute('data-mood', mood, timeout=8000)
                     page.clock.run_for(80)
                     frame = pet.evaluate('(el) => el.toDataURL()')

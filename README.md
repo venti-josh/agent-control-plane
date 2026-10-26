@@ -180,8 +180,9 @@ timestamps are stored in `codex-activity.sqlite3` and `claude-activity.sqlite3`;
 prompts, transcripts, or tool outputs are retained. The hooks run locally, make no
 network calls, and never approve tools or modify agent responses.
 
-Comet plays dead below a 30-minute average of 1 (X eyes, limp tail, no motion),
-sighs with drooping ears and tears from 1 to below 2, flies happily from 2 to
+Comet plays dead when nothing is running and the 30-minute average is below 1
+(X eyes, limp tail, no motion), sighs with drooping ears and tears while any
+thread is running or the average is from 1 to below 2, flies happily from 2 to
 below 3, and leaves a rainbow trail at 3 or more. System reduced-motion settings disable
 animation. Failed activity requests show unavailable counters until recovery.
 

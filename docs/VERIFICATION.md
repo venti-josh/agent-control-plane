@@ -6,7 +6,8 @@ Added a native macOS floating panel with the Comet critter above Running/Waiting
 counts and expandable concurrency averages. The borderless translucent square
 supports click-to-toggle, drag-to-move, and a bottom-right resize grip. Content
 scales proportionally; position, mode, visibility, and scale persist. Four moods
-follow observed 30-minute activity; reduced motion freezes animation.
+follow running threads and observed 30-minute activity; reduced motion freezes
+animation.
 
 Activity counts track ACP runs and observed subagents, exclude queued agents,
 and count input waits separately. Averages divide observed agent-seconds by the

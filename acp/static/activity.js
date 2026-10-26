@@ -103,7 +103,8 @@ const activityOverlay = (() => {
       document.getElementById('activity-waiting').textContent = data.waiting_on_input + data.idle;
       for (const period of ['30m','1h','3h']) document.getElementById(`activity-${period}`).textContent = data.averages[period].toFixed(2);
       const average = data.averages['30m'];
-      const mood = average >= 3 ? 'rainbow' : average >= 2 ? 'happy' : average >= 1 ? 'sad' : 'dead';
+      // A running thread keeps Comet alive: dead only when nothing runs and the 30-minute average is below 1.
+      const mood = average >= 3 ? 'rainbow' : average >= 2 ? 'happy' : average >= 1 || data.running >= 1 ? 'sad' : 'dead';
       tile.dataset.mood = mood;
       const moods = {rainbow:'Comet is ecstatic with a rainbow trail', happy:'Comet is happy and flying', sad:'Comet is sad with drooping ears and falling tears', dead:'Comet is dead: X eyes and a limp tail'};
       cometPet.setMood(mood);
