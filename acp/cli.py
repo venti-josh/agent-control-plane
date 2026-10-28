@@ -123,6 +123,22 @@ def main() -> None:
     events.add_argument("--after", type=int, default=0)
     events.add_argument("--follow", action="store_true")
     sub.add_parser("mcp")
+    claude = sub.add_parser('claude', help='Migrate saved Claude Desktop Code sessions between accounts')
+    csub = claude.add_subparsers(dest='claude_command', required=True)
+    for name in ('inventory', 'migrate', 'rollback', 'status'):
+        command = csub.add_parser(name)
+        command.add_argument('--sessions-dir', type=Path,
+                             default=Path.home() / 'Library/Application Support/Claude/claude-code-sessions')
+        command.add_argument('--projects-dir', type=Path,
+                             default=Path(os.getenv('CLAUDE_CONFIG_DIR') or str(Path.home() / '.claude')) / 'projects')
+        command.add_argument('--backup-dir', type=Path, help='Default: $ACP_HOME/claude-migrations')
+        if name == 'migrate':
+            command.add_argument('--to', required=True, dest='destination', metavar='ACCOUNT/ORG')
+            command.add_argument('--from', dest='source', metavar='ACCOUNT/ORG',
+                                 help='Required unless exactly one other populated account/org exists')
+            command.add_argument('--dry-run', action='store_true', help='Print the migration plan without any writes')
+        elif name == 'rollback':
+            command.add_argument('migration_id')
     activity = sub.add_parser('activity', help='Observe Codex and Claude agents across local chats using hooks')
     activity.add_argument('activity_command', choices=['install', 'status', 'uninstall'])
     activity.add_argument('--target', choices=['codex', 'claude', 'all'],
@@ -168,6 +184,19 @@ def main() -> None:
         command.add_argument('--request-id', help='Reuse this ID when retrying the same logical command')
     args = parser.parse_args()
     try:
+        if args.command == 'claude':
+            from .claude_sessions import SessionStore
+            from .config import user_home
+            store = SessionStore(args.sessions_dir, args.projects_dir,
+                                 args.backup_dir or user_home() / 'claude-migrations')
+            if args.claude_command == 'migrate':
+                result = store.migrate(args.destination, args.source, args.dry_run)
+            elif args.claude_command == 'rollback':
+                result = store.rollback(args.migration_id)
+            else:
+                result = getattr(store, args.claude_command)()
+            print(json.dumps(result, indent=2))
+            return
         from . import daemon
         if args.command == "setup":
             print(json.dumps(daemon.setup(), indent=2))
