@@ -122,7 +122,12 @@ ACP migrations from running concurrently, even with different backup directories
 The lock file persists, but the OS releases the lock when the process exits.
 
 If interrupted, use `status` to find the migration ID and run `rollback` before
-retrying. Rollback restores original bytes only if the current file still matches
+retrying. Rollbacks must run in reverse migration order: `status` reports
+`latest_rollback` with its ID and backup directory. A store-wide order journal
+enforces this even when different backup directories were used, since a newer
+migration can depend on files that it did not change. A partial rollback keeps
+its place in that order until its changed files are reconciled and rollback is
+retried successfully. Rollback restores original bytes only if the current file still matches
 the migration's written hash. Changed files are skipped and reported as
 `rollback_partial`; reconcile those manually. Backup blobs are verified before
 restoring any files. Newly created files are removed during rollback, empty

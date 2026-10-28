@@ -97,6 +97,21 @@ def read_current(store, relative):
     return path.read_bytes() if path.exists() else None
 
 
+def migration_order(store):
+    path = safe_path(store.root, '.acp-migration-order.json')
+    data = object_json(path.read_bytes()) if path.exists() else {'version': 1, 'active': []}
+    active = data.get('active')
+    if data.get('version') != 1 or not isinstance(active, list) or not all(
+            isinstance(item, dict) and isinstance(item.get('id'), str) and TOKEN.fullmatch(item['id'])
+            and isinstance(item.get('backup_directory'), str) for item in active):
+        raise ValueError('Invalid store-wide migration order; rollback refused')
+    return data
+
+
+def save_order(store, order):
+    atomic_write(safe_path(store.root, '.acp-migration-order.json'), encode(order))
+
+
 def apply(store, target, source):
     # Resolve selectors before creating even a lock file.
     store.select(target)
@@ -106,6 +121,7 @@ def apply(store, target, source):
             raise ValueError('Source and destination must differ')
     require_stopped()
     with migration_lock(store):
+        order = migration_order(store)
         report, changes = store.plan(target, source)
         if not changes:
             return {**report, 'dry_run': False, 'disk_verified': True, 'migration_id': None}
@@ -127,6 +143,10 @@ def apply(store, target, source):
         # Persist the write-ahead manifest BEFORE changing any Claude files.
         atomic_write(folder / 'manifest.json', encode(manifest))
         try:
+            # Track dependency order in the shared store, not a particular backup
+            # directory. Later migrations may depend on unchanged earlier files.
+            order['active'].append({'id': migration_id, 'backup_directory': str(store.backups)})
+            save_order(store, order)
             require_stopped()
             for path, expected in store.observed.items():
                 if read_current(store, str(path.relative_to(store.root))) != expected:
@@ -189,6 +209,24 @@ def rollback(store, migration_id):
     with migration_lock(store):
         manifest = load_manifest(store, migration_id)
         folder = safe_path(store.backups, migration_id)
+        order = migration_order(store)
+        latest = order['active'][-1] if order['active'] else None
+        identity = {'id': migration_id, 'backup_directory': str(store.backups)}
+        if manifest['state'] == 'rolled_back' or (identity not in order['active'] and all(
+                digest(read_current(store, e['path'])) == e['before'] for e in manifest['entries'])):
+            # Registration may have failed before any session writes, or rollback
+            # completed before its order entry could be removed. Neither needs a
+            # file mutation; repeated rollback must not disturb subsequent work.
+            if manifest['state'] != 'rolled_back':
+                manifest['state'] = 'rolled_back'
+                atomic_write(folder / 'manifest.json', encode(manifest))
+            if latest == identity:
+                order['active'].pop()
+                save_order(store, order)
+            return dict(migration_id=migration_id, state='rolled_back', restored=[],
+                        skipped_changed_files=[], backup=str(folder))
+        if latest != identity:
+            raise RuntimeError(f'Rollback requires the latest migration first: {latest}')
         # Validate ALL required backup blobs before restoring the first file.
         originals = []
         for index, entry in enumerate(manifest['entries']):
@@ -219,6 +257,9 @@ def rollback(store, migration_id):
         manifest['state'] = 'rollback_partial' if skipped else 'rolled_back'
         manifest['rollback_skipped'] = skipped
         atomic_write(folder / 'manifest.json', encode(manifest))
+        if not skipped:
+            order['active'].pop()
+            save_order(store, order)
         return dict(migration_id=migration_id, state=manifest['state'], restored=restored,
                     skipped_changed_files=skipped, backup=str(folder))
 
@@ -245,5 +286,7 @@ def status(store):
             data = object_json(path.read_bytes())
             if data.get('root') == str(store.root):
                 migrations.append({k: data.get(k) for k in ('id', 'state', 'source', 'destination', 'created_at')})
+    order = migration_order(store)
     return dict(locked=locked, backup_directory=str(store.backups), migrations=migrations,
+                latest_rollback=order['active'][-1] if order['active'] else None,
                 last_migration=migrations[-1] if migrations else None, unprepared_backups=incomplete)

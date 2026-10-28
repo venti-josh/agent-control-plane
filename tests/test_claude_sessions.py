@@ -148,6 +148,47 @@ def test_rollback_preserves_post_migration_work_and_can_be_retried(store):
     assert store.rollback(report['migration_id'])['state'] == 'rollback_partial'
 
 
+def test_rollback_requires_reverse_order_across_backup_directories(store):
+    record(store, isArchived=True)
+    first = migrate(store)
+    record(store, 'two', isArchived=True)
+    other = sessions.SessionStore(store.root, store.projects, store.backups / 'other')
+    second = migrate(other)
+    before = tree(store.root)
+    with pytest.raises(RuntimeError, match='latest migration'):
+        store.rollback(first['migration_id'])
+    assert tree(store.root) == before
+    assert other.rollback(second['migration_id'])['state'] == 'rolled_back'
+    assert store.rollback(first['migration_id'])['state'] == 'rolled_back'
+    assert tree(store.root / 'account-b/org-b') == {}
+    assert other.rollback(second['migration_id'])['state'] == 'rolled_back'
+
+
+@pytest.mark.parametrize('failure_point', ['register', 'pop'])
+def test_migration_order_write_failure_is_recoverable(store, monkeypatch, failure_point):
+    from acp import claude_migration
+    record(store)
+    original = claude_migration.save_order
+
+    def fail_order(*args):
+        raise OSError('disk full')
+
+    if failure_point == 'register':
+        monkeypatch.setattr(claude_migration, 'save_order', fail_order)
+        with pytest.raises(RuntimeError, match='rollback'):
+            migrate(store)
+        migration_id = store.status()['last_migration']['id']
+    else:
+        migration_id = migrate(store)['migration_id']
+        monkeypatch.setattr(claude_migration, 'save_order', fail_order)
+        with pytest.raises(OSError, match='disk full'):
+            store.rollback(migration_id)
+    assert tree(store.root / 'account-b/org-b') == {}
+    monkeypatch.setattr(claude_migration, 'save_order', original)
+    assert store.rollback(migration_id)['state'] == 'rolled_back'
+    assert store.status()['latest_rollback'] is None
+
+
 def test_interrupted_write_has_durable_manifest_and_can_be_rolled_back(store, monkeypatch):
     from acp import claude_migration
     record(store)
@@ -251,6 +292,20 @@ def test_newer_destination_stale_status_is_cleaned_when_merged(store):
     assert any('status dropped' in x['reason'] for x in result['unavailable'])
 
 
+def test_identical_records_with_stale_status_are_cleaned_without_equal_time_conflict(store):
+    source = record(store, lastAssistantUuid='gone', turnWrapUp={'description': 'stale'})
+    destination = record(store, org='account-b/org-b', lastAssistantUuid='gone',
+                         turnWrapUp={'description': 'stale'})
+    original = destination.read_bytes()
+    result = migrate(store)
+    assert 'lastAssistantUuid' not in json.loads(destination.read_text())
+    assert not any('equal timestamps' in x['reason'] for x in result['unavailable'])
+    assert migrate(store)['changes'] == []
+    assert source.read_bytes() == original
+    store.rollback(result['migration_id'])
+    assert destination.read_bytes() == original
+
+
 def test_corrupt_backup_prevents_any_rollback_writes(store):
     record(store, lastActivityAt=200)
     record(store, org='account-b/org-b', lastActivityAt=100)
@@ -289,6 +344,28 @@ def test_destination_change_after_plan_is_not_overwritten(store, monkeypatch):
     rolled = store.rollback(store.status()['last_migration']['id'])
     assert rolled['state'] == 'rollback_partial'
     assert destination.read_text() == 'new user work'
+
+
+def test_destination_change_during_plan_is_not_overwritten(store, monkeypatch):
+    record(store, lastActivityAt=200, title='source')
+    destination = record(store, org='account-b/org-b', lastActivityAt=100, title='destination')
+    inspect = store.inspect
+    edited = json.loads(destination.read_text())
+    edited.update(lastActivityAt=300, title='new work during planning')
+
+    def edit_during_inspection(*args):
+        write(destination, edited)
+        return inspect(*args)
+
+    monkeypatch.setattr(store, 'inspect', edit_during_inspection)
+    with pytest.raises(RuntimeError, match='changed while planning'):
+        migrate(store)
+    assert json.loads(destination.read_text()) == edited
+    assert store.status()['last_migration'] is None
+    monkeypatch.setattr(store, 'inspect', inspect)
+    inventory = store.inventory()
+    destination_account = next(a for a in inventory['accounts'] if a['account'] == 'account-b/org-b')
+    assert destination_account['sessions'][0]['title'] == edited['title']
 
 
 @pytest.mark.parametrize('executable', ['/Applications/Claude.app/Contents/MacOS/Claude',

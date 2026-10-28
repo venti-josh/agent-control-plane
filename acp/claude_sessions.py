@@ -80,6 +80,8 @@ class SessionStore:
     def read(self, relative: str) -> bytes | None:
         path = safe_path(self.root, relative)
         raw = path.read_bytes() if path.exists() else None
+        if path in self.observed and self.observed[path] != raw:
+            raise RuntimeError(f'Session store changed while planning: {relative}; retry with Claude stopped')
         self.observed[path] = raw
         return raw
 
@@ -171,6 +173,7 @@ class SessionStore:
         return result
 
     def inventory(self) -> dict:
+        self.observed = {}
         unavailable, accounts = [], []
         transcripts = self.transcript_index()
         for account in self.accounts():
@@ -229,6 +232,11 @@ class SessionStore:
                 continue
             if session in destinations:
                 destination, _ = destinations[session]
+                newer_destination = destination['lastActivityAt'] > candidate['lastActivityAt']
+                if destination['lastActivityAt'] >= candidate['lastActivityAt']:
+                    destination = self.inspect(destination, transcripts, unavailable)
+                    if destination is None:
+                        continue
                 if destination['lastActivityAt'] == candidate['lastActivityAt']:
                     # A prior migration may already have merged PRs or removed stale status.
                     a, b = dict(candidate), dict(destination)
@@ -236,11 +244,6 @@ class SessionStore:
                     b.pop('prs', None)
                     if a != b:
                         unavailable.append({'session': session, 'reason': 'conflicting records with equal timestamps; preserved destination'})
-                        continue
-                newer_destination = destination['lastActivityAt'] > candidate['lastActivityAt']
-                if newer_destination:
-                    destination = self.inspect(destination, transcripts, unavailable)
-                    if destination is None:
                         continue
                 winner, other = (destination, candidate) if newer_destination else (candidate, destination)
                 candidate = dict(winner)
