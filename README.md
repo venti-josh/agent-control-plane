@@ -61,6 +61,81 @@ agent runs and retains their session references for explicit retry. Agent files 
 does not stop tasks. Interactive API documentation is at the reported URL plus
 `/docs`.
 
+### Carry Claude Desktop Code sessions to another account (macOS)
+
+`acp claude` copies saved **Code tab** session records between local account/org
+folders. It does not switch your Desktop or CLI login. These commands work without
+the ACP server. Start with the read-only inventory to find the exact folder IDs:
+
+```sh
+acp claude inventory
+acp claude migrate --from ACCOUNT_A/ORG_A --to ACCOUNT_B/ORG_B --dry-run
+# Quit Claude Desktop and stop Claude CLI/background sessions before applying.
+acp claude migrate --from ACCOUNT_A/ORG_A --to ACCOUNT_B/ORG_B
+acp claude status
+acp claude rollback MIGRATION_ID
+```
+
+Use IDs from the inventory in place of the uppercase placeholders. Both folders
+must already exist: sign in to the destination in Desktop once to initialize its
+local store, then quit it. `--from` can be omitted only when exactly one other
+populated account/org exists. Keep Claude closed throughout apply or rollback;
+the command checks host processes before writing and refuses if inspection fails.
+Run it from a host terminal, not a sandbox that hides processes. Read-only inventory,
+status and dry runs can be used while Claude is open, but that view can change.
+
+The JSON report lists `restored` (planned during a dry run),
+`preserved_as_newer`, `unavailable`, `needs_login_or_ui_check`, `already_present`,
+and the exact file paths in `changes`. After applying, `disk_verified` proves the
+written bytes match the plan. **The overall verdict remains `partial` until you
+verify the app manually**: sign in to the destination, check sessions, worktrees,
+subthreads and statuses, then quit and reopen once more. ACP does not claim to
+verify Desktop's indexing behavior. See the [restart checklist](docs/VERIFICATION.md#claude-desktop-session-migration--manual-restart-checklist).
+
+Migration rules:
+
+- Preserve Desktop and CLI IDs independently, plus unknown record fields. The
+  two IDs can differ for imported sessions. Shared CLI transcripts remain in place.
+- Skip missing, ambiguous or malformed transcripts and unsupported records.
+  Missing project/worktree paths and broken parent links are reported, not repaired.
+- Choose the larger `lastActivityAt` for a conflicting session; equal timestamps
+  with differing non-PR fields require manual reconciliation. Merge PR attachments
+  by host, repository and PR number, retaining the winning record's metadata.
+- Drop saved summary/status fields when their referenced messages are absent.
+  Keep newer destination work, even if it means a session cannot be migrated.
+- Merge the version-1 archive index consistently with the chosen records and
+  merge version-1 backlog items by ID. Conflicting backlog items keep the destination
+  value and appear in the report. Unknown metadata formats stay untouched.
+- Report connector tool IDs absent from destination records. This is an inventory
+  comparison, not an authorization check; reconnect connectors in the new account.
+
+Credentials, cookies, Keychain, Chromium databases, sidebar layout, environment
+definitions, Cowork sessions, live turns, approval dialogs, and terminals are
+outside the migration. Record fields may refer to these account-bound resources;
+their presence does not make the resources available in the destination.
+
+Backups and a write-ahead manifest are stored under `$ACP_HOME/claude-migrations`
+(by default `~/.local/share/acp/claude-migrations`). Every changed destination file
+has before/after SHA-256 hashes and private backup files; the source stays intact.
+Writes use temporary files and atomic replacement. A store-wide lock prevents two
+ACP migrations from running concurrently, even with different backup directories.
+The lock file persists, but the OS releases the lock when the process exits.
+
+If interrupted, use `status` to find the migration ID and run `rollback` before
+retrying. Rollback restores original bytes only if the current file still matches
+the migration's written hash. Changed files are skipped and reported as
+`rollback_partial`; reconcile those manually. Backup blobs are verified before
+restoring any files. Newly created files are removed during rollback, empty
+directories may remain, and backups are retained. `unprepared_backups` means
+preparation stopped before a manifest existed, so no session writes began.
+
+All four commands accept `--sessions-dir`, `--projects-dir`, and `--backup-dir`
+for alternate profiles or isolated fixtures. Use the same options for rollback.
+The default stores are `~/Library/Application Support/Claude/claude-code-sessions`
+and `${CLAUDE_CONFIG_DIR:-~/.claude}/projects`. The unversioned Desktop schema is
+validated conservatively; a future explicit `schemaVersion` is reported as
+unsupported until its semantics are verified.
+
 ### Comet’s macOS activity overlay
 
 On macOS the installer builds Comet, the native floating panel, and `acp start`

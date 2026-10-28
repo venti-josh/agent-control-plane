@@ -1,5 +1,39 @@
 # Verification record
 
+## Claude Desktop session migration — manual restart checklist
+
+The automated suite exercises temporary session stores and transcripts, including
+newer-record conflicts, independent Desktop/CLI IDs, archive/backlog merging,
+interrupted writes, locks, symlinks, corrupt backups, and rollback after new work.
+A read-only inventory was also checked against the local Desktop record layout.
+No real account migration or Desktop restart validation was performed for this PR.
+
+Before using the feature on valuable sessions, verify one disposable session on
+the installed Desktop version. Desktop's private file format and its indexing
+behavior are not a supported public API. Keep the backup until this checklist
+passes; a successful disk report alone is insufficient.
+
+1. Initialize both account/org folders by signing in to each account once. Create
+   a disposable session with a worktree, a PR attachment, a subthread, and a saved
+   completed/waiting status; record its IDs and paths.
+2. Run inventory and a dry run, reviewing every unavailable item. Quit Desktop
+   and stop CLI/background Claude processes. Keep them stopped during writes.
+3. Apply the migration from a host terminal. Record the migration ID and backup
+   path. Confirm `disk_verified`, the changed files and partial-verdict reasons.
+4. Sign in to the destination. Confirm the restored session appears once, opens
+   the existing worktree/branch, retains its PR, and opens its subthread. Confirm
+   the saved status makes sense and does not imply a live approval dialog.
+5. Reconnect required connectors and recreate environment/sidebar settings as
+   needed. Quit and reopen Desktop again; repeat the checks. Do not modify the
+   Chromium databases to force a failed migration to appear.
+6. For rollback verification, quit Desktop/CLI again, run `rollback ID`, and
+   confirm original destination files return. Separately edit a disposable
+   destination record after migration and confirm rollback reports/skips it.
+
+If sessions fail to appear, stop using the migrated profile, close Claude, and
+roll back. Preserve the report and backup for diagnosis; do not treat the
+session-copy feature as verified on that Desktop version.
+
 ## Native Comet activity overlay — 2026-10-17
 
 Added a native macOS floating panel with the Comet critter above Running/Waiting
