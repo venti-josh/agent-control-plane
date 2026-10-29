@@ -65,21 +65,55 @@ does not stop tasks. Interactive API documentation is at the reported URL plus
 
 `acp claude` copies saved **Code tab** session records between local account/org
 folders. It does not switch your Desktop or CLI login. These commands work without
-the ACP server. Start with the read-only inventory to find the exact folder IDs:
+the ACP server. Run the interactive wizard from a host terminal:
 
 ```sh
-acp claude inventory
-acp claude migrate --from ACCOUNT_A/ORG_A --to ACCOUNT_B/ORG_B --dry-run
-# Quit Claude Desktop and stop Claude CLI/background sessions before applying.
-acp claude migrate --from ACCOUNT_A/ORG_A --to ACCOUNT_B/ORG_B
+acp claude migrate
+```
+
+Choose the **destination first**, then the source, from numbered profiles showing
+recent session titles and dates. When the CLI's local account metadata matches
+both IDs, its email and organization name are shown as labels; this does **not**
+prove which account Desktop is signed into. ACP never guesses the destination
+from session counts or recency. If a profile is missing, choose `n`, sign into
+that account/org in Desktop and open the Code tab. The wizard watches for a new
+folder for up to two minutes and refreshes the list. Use `r` to rescan existing
+profiles after creating a recognizable Code session, or `q` / Ctrl-C to cancel.
+
+The wizard previews copies, preserved sessions, warnings, and changed files. It
+offers optional names such as `personal` and `work`, then asks you to quit Claude
+and type `migrate` to confirm. Names are saved only after migration succeeds.
+If the plan changes before applying, ACP stops so you can review a fresh preview.
+Successful migrations print the backup path and an undo command with the correct
+directory options. Reopen Desktop and verify the migrated sessions manually.
+
+For repeat use or scripts:
+
+```sh
+acp claude profiles                         # compact JSON, IDs, names and recent sessions
+acp claude inventory                        # detailed transcript availability
+acp claude alias personal ACCOUNT_A/ORG_A    # optionally name profiles separately
+acp claude alias work ACCOUNT_B/ORG_B
+acp claude migrate --from personal --to work --dry-run
+acp claude migrate --from personal --to work # previews and asks for confirmation
+# For unattended apply, after quitting Desktop and all Claude CLI processes:
+acp claude migrate --from personal --to work --yes
 acp claude status
 acp claude rollback MIGRATION_ID
 ```
 
-Use IDs from the inventory in place of the uppercase placeholders. Both folders
+Aliases are stored privately in `$ACP_HOME/claude-profiles.json` and scoped to
+the canonical session-store directory. An existing name cannot be reassigned to
+a different profile; use another name. You can always use `ACCOUNT/ORG` directly.
+`--dry-run` never saves aliases or writes session files. Interactive prompts and
+summaries go to stderr; the final JSON report stays on stdout. Unattended apply
+requires explicit `--from`, `--to`, and `--yes`; existing scripts must add `--yes`.
+A noninteractive dry run can still infer the source when exactly one other
+populated account/org exists.
+
+Use IDs from profiles or inventory in place of the uppercase placeholders. Both folders
 must already exist: sign in to the destination in Desktop once to initialize its
-local store, then quit it. `--from` can be omitted only when exactly one other
-populated account/org exists. Keep Claude closed throughout apply or rollback;
+local store, then quit it. Keep Claude closed throughout apply or rollback;
 the command checks host processes before writing and refuses if inspection fails.
 Run it from a host terminal, not a sandbox that hides processes. Read-only inventory,
 status and dry runs can be used while Claude is open, but that view can change.
@@ -134,7 +168,7 @@ restoring any files. Newly created files are removed during rollback, empty
 directories may remain, and backups are retained. `unprepared_backups` means
 preparation stopped before a manifest existed, so no session writes began.
 
-All four commands accept `--sessions-dir`, `--projects-dir`, and `--backup-dir`
+All Claude commands accept `--sessions-dir`, `--projects-dir`, and `--backup-dir`
 for alternate profiles or isolated fixtures. Use the same options for rollback.
 The default stores are `~/Library/Application Support/Claude/claude-code-sessions`
 and `${CLAUDE_CONFIG_DIR:-~/.claude}/projects`. The unversioned Desktop schema is

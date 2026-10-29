@@ -112,7 +112,7 @@ def save_order(store, order):
     atomic_write(safe_path(store.root, '.acp-migration-order.json'), encode(order))
 
 
-def apply(store, target, source):
+def apply(store, target, source, expected_plan=None):
     # Resolve selectors before creating even a lock file.
     store.select(target)
     if source is not None:
@@ -123,6 +123,8 @@ def apply(store, target, source):
     with migration_lock(store):
         order = migration_order(store)
         report, changes = store.plan(target, source)
+        if expected_plan is not None and (report, changes) != expected_plan:
+            raise RuntimeError('Session store changed since preview; rerun migration to review a fresh plan')
         if not changes:
             return {**report, 'dry_run': False, 'disk_verified': True, 'migration_id': None}
         migration_id = f'{time.time_ns()}-{uuid.uuid4().hex[:8]}'

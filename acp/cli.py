@@ -125,7 +125,7 @@ def main() -> None:
     sub.add_parser("mcp")
     claude = sub.add_parser('claude', help='Migrate saved Claude Desktop Code sessions between accounts')
     csub = claude.add_subparsers(dest='claude_command', required=True)
-    for name in ('inventory', 'migrate', 'rollback', 'status'):
+    for name in ('inventory', 'profiles', 'alias', 'migrate', 'rollback', 'status'):
         command = csub.add_parser(name)
         command.add_argument('--sessions-dir', type=Path,
                              default=Path.home() / 'Library/Application Support/Claude/claude-code-sessions')
@@ -133,10 +133,15 @@ def main() -> None:
                              default=Path(os.getenv('CLAUDE_CONFIG_DIR') or str(Path.home() / '.claude')) / 'projects')
         command.add_argument('--backup-dir', type=Path, help='Default: $ACP_HOME/claude-migrations')
         if name == 'migrate':
-            command.add_argument('--to', required=True, dest='destination', metavar='ACCOUNT/ORG')
-            command.add_argument('--from', dest='source', metavar='ACCOUNT/ORG',
-                                 help='Required unless exactly one other populated account/org exists')
+            command.add_argument('--to', dest='destination', metavar='PROFILE',
+                                 help='Destination alias or ACCOUNT/ORG; omit for the interactive wizard')
+            command.add_argument('--from', dest='source', metavar='PROFILE',
+                                 help='Source alias or ACCOUNT/ORG; omit to choose interactively')
             command.add_argument('--dry-run', action='store_true', help='Print the migration plan without any writes')
+            command.add_argument('--yes', action='store_true', help='Apply without prompting; requires --from and --to')
+        elif name == 'alias':
+            command.add_argument('name', help='Friendly profile name, e.g. personal or work')
+            command.add_argument('account', metavar='ACCOUNT/ORG')
         elif name == 'rollback':
             command.add_argument('migration_id')
     activity = sub.add_parser('activity', help='Observe Codex and Claude agents across local chats using hooks')
@@ -189,8 +194,17 @@ def main() -> None:
             from .config import user_home
             store = SessionStore(args.sessions_dir, args.projects_dir,
                                  args.backup_dir or user_home() / 'claude-migrations')
+            from .claude_profiles import Profiles, migrate
+            profiles = Profiles(store, user_home())
             if args.claude_command == 'migrate':
-                result = store.migrate(args.destination, args.source, args.dry_run)
+                result = migrate(profiles, args.destination, args.source, args.dry_run, args.yes)
+            elif args.claude_command == 'profiles':
+                result = {'profiles': profiles.list()}
+            elif args.claude_command == 'alias':
+                account = store.select(args.account)
+                profiles.validate_alias(args.name, account, profiles.aliases())
+                profiles.save({args.name: account})
+                result = {'alias': args.name, 'account': account}
             elif args.claude_command == 'rollback':
                 result = store.rollback(args.migration_id)
             else:
