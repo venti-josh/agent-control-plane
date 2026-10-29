@@ -38,6 +38,8 @@ def test_wizard_selects_by_number_previews_and_cancels_without_writes(store, run
     assert json.loads(out)['cancelled'] is True
     assert 'Recognizable source session' in err and '2023-11-14' in err
     assert 'Copy/update 1 sessions' in err and 'Source:' in err and 'Destination:' in err
+    assert 'blue unread dots' in err
+    assert err.index('blue unread dots') < err.index('Type migrate')
     assert tree(store.root.parent.parent) == before
 
 

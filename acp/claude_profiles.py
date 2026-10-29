@@ -158,10 +158,11 @@ class Profiles:
 
 def preview(report):
     say(f'\nSource:      {report["source"]}\nDestination: {report["destination"]}')
+    say(f'Warning: {report["unread_state"]["reason"]}')
     say(f'Copy/update {len(report["restored"])} sessions; '
         f'preserve {len(report["preserved_as_newer"])} newer sessions; '
         f'{len(report["already_present"])} already present; {len(report["changes"])} files to change.')
-    say(f'{len(report["unavailable"])} issues (skips, conflicts, or warnings):')
+    say(f'Additional issues (skips, conflicts, or warnings): {len(report["unavailable"])}')
     for issue in report['unavailable']:
         say(f'  {display(issue.get("session", "Metadata"))}: {display(issue["reason"])}')
     for path in report['changes']:

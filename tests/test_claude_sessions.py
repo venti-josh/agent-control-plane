@@ -56,6 +56,9 @@ def test_inventory_and_dry_run_are_read_only_and_name_unavailable_records(store)
     assert any(x['session'] == source.stem and 'missing directory' in x['reason'] for x in report['unavailable'])
     assert any(x['session'] == missing.stem and 'missing transcript' in x['reason'] for x in report['unavailable'])
     assert report['needs_login_or_ui_check']
+    assert inventory['unread_state']['status'] == 'not_migrated'
+    assert report['unread_state']['status'] == 'not_migrated'
+    assert 'blue unread dots' in report['unread_state']['reason']
     assert tree(store.root.parent.parent) == before
 
 
@@ -67,6 +70,7 @@ def test_copy_preserves_identity_unknown_fields_and_rollback_bytes(store):
     destination = store.root / 'account-b/org-b' / source.name
     assert destination.read_bytes() == source.read_bytes()
     assert report['disk_verified'] is True
+    assert report['unread_state']['status'] == 'not_migrated'
     assert migrate(store)['changes'] == []
     assert store.migrate('account-a/org-a')['changes'] == []
     assert store.status()['last_migration']['id'] == report['migration_id']

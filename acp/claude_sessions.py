@@ -12,6 +12,11 @@ import subprocess
 from pathlib import Path
 
 TOKEN = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]*\Z')
+UNREAD_WARNING = (
+    'Sidebar blue unread dots are not migrated. Claude stores them separately from session records, '
+    'and signing out can clear them. Rerunning this command cannot recover a lost unread list; '
+    'preserving it requires a snapshot before signing out. ACP does not yet capture or restore that state.'
+)
 UI_CHECKS = [
     'Sign in to the destination account in Claude Desktop; CLI login is separate.',
     'Restart Claude and check session visibility, worktrees, subthreads and statuses; then reopen again.',
@@ -189,7 +194,8 @@ class SessionStore:
                               'copyable': inspected is not None,
                               'issues': unavailable[start:]})
             accounts.append({'account': account, 'count': len(items), 'sessions': items})
-        return {'accounts': accounts, 'unavailable': unavailable, 'needs_login_or_ui_check': UI_CHECKS}
+        return {'accounts': accounts, 'unavailable': unavailable, 'needs_login_or_ui_check': UI_CHECKS,
+                'unread_state': {'status': 'not_migrated', 'reason': UNREAD_WARNING}}
 
     def plan(self, target: str, source: str | None = None) -> tuple[dict, list]:
         self.observed = {}
@@ -203,7 +209,8 @@ class SessionStore:
         if source == target:
             raise ValueError('Source and destination must differ')
         report = dict(source=source, destination=target, verdict='partial', restored=[], preserved_as_newer=[],
-                      unavailable=[], needs_login_or_ui_check=UI_CHECKS, changes=[], already_present=[])
+                      unavailable=[], needs_login_or_ui_check=UI_CHECKS, changes=[], already_present=[],
+                      unread_state={'status': 'not_migrated', 'reason': UNREAD_WARNING})
         unavailable = report['unavailable']
         sources = self.records(source, unavailable)
         destinations = self.records(target, unavailable)

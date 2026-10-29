@@ -1,5 +1,20 @@
 # Verification record
 
+## Claude blue unread dots — reporting limitation
+
+Read-only inspection of the installed renderer found a separate
+`epitaxy-unread-v1` Local Storage record with `state.unreadIds` and
+`state.explicitUnreadIds`. It is not part of a `local_*.json` session record.
+The local database after the reported account switch contained a deletion for
+that key. The available older handoff backups do not establish the unread list
+at the time of this switch. No unread state was restored or guessed.
+
+Inventory, dry-run and apply now report unread state as `not_migrated`, even when
+session-file hashes verify. The CLI displays this limitation before confirmation.
+Regression assertions extend the existing inventory/dry-run, apply/rollback and
+wizard-cancellation tests. Actual unread migration remains unsupported; a future
+implementation needs a pre-sign-out capture, scoped restore and restart validation.
+
 ## Claude migration wizard — manual terminal checklist
 
 Automated isolated-store tests cover numbered selection, recent-session previews,

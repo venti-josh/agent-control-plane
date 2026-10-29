@@ -65,7 +65,19 @@ does not stop tasks. Interactive API documentation is at the reported URL plus
 
 `acp claude` copies saved **Code tab** session records between local account/org
 folders. It does not switch your Desktop or CLI login. These commands work without
-the ACP server. Run the interactive wizard from a host terminal:
+the ACP server.
+
+**Blue unread dots are not migrated.** Claude stores Code-tab unread markers
+separately from the session JSON records. Signing out can clear that unread list;
+transcripts and saved turn summaries cannot reconstruct which sessions you had
+read. The current command does not capture or restore unread state, and rerunning
+it or rolling back a session migration will not restore lost markers. Preserving
+them requires capturing that separate state **before signing out**. Inventory,
+dry-run, and apply reports expose `unread_state.status = "not_migrated"`, and the
+terminal preview warns before confirmation. `disk_verified` only verifies the
+session files that ACP wrote, not unread markers.
+
+Run the interactive wizard from a host terminal:
 
 ```sh
 acp claude migrate
