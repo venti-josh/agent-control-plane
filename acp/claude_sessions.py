@@ -344,12 +344,12 @@ class SessionStore:
         if items != data[1]['items']:
             change(f'{target}/backlog/tasks.json', encode({**data[1], 'items': items}))
 
-    def migrate(self, target, source=None, dry_run=False):
+    def migrate(self, target, source=None, dry_run=False, expected_plan=None):
         from .claude_migration import apply
         if dry_run:
             report, _ = self.plan(target, source)
             return {**report, 'dry_run': True, 'disk_verified': False}
-        return apply(self, target, source)
+        return apply(self, target, source, expected_plan=expected_plan)
 
     def rollback(self, migration_id):
         from .claude_migration import rollback

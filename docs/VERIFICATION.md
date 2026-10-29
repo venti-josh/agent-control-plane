@@ -1,5 +1,27 @@
 # Verification record
 
+## Claude migration wizard — manual terminal checklist
+
+Automated isolated-store tests cover numbered selection, recent-session previews,
+CLI metadata labels, aliases scoped to the store, confirmation/cancellation,
+noninteractive safeguards, new-folder rescanning, changed-preview refusal, and
+reporting a completed migration when alias persistence fails. The CLI metadata
+does not establish the current Desktop account; the user selects the destination.
+
+1. Run `acp claude migrate --dry-run` in a host terminal. Confirm that the numbered
+   profiles are recognizable from recent titles/dates and any matching CLI labels.
+2. Select the destination and source. Check that the preview direction is correct
+   and that no aliases, backups or session changes are written.
+3. Run without `--dry-run`, enter optional names, then decline confirmation. Verify
+   that nothing is migrated and no names are saved. Repeat with Ctrl-C.
+4. For a disposable migration, close Claude and type `migrate`. Verify the backup,
+   saved names and printed undo command, then follow the restart checklist below.
+5. To initialize another destination, choose `n`, sign in and open the Code tab.
+   Confirm the new folder appears in the refreshed list and still needs selection.
+
+No real account migration or Desktop restart validation has been performed for
+the wizard. The manual Desktop checks below remain necessary.
+
 ## Claude Desktop session migration — manual restart checklist
 
 The automated suite exercises temporary session stores and transcripts, including
