@@ -139,7 +139,7 @@ class Profiles:
                 continue
             if choice.lower() == 'n':
                 before = set(self.store.accounts())
-                say('Sign in to the destination account/org in Desktop and open the Code tab. '
+                say(f'Sign in to the {role} account/org in Desktop and open the Code tab. '
                     'Watching for a new profile; Ctrl-C cancels.')
                 deadline = time.monotonic() + 120
                 while time.monotonic() < deadline and not (set(self.store.accounts()) - before):

@@ -133,14 +133,21 @@ def test_changed_preview_is_refused_before_destination_or_backup_writes(store, r
     assert not store.backups.exists()
 
 
-def test_wizard_watches_new_destination_folder_and_rescans_without_guessing(store, run_cli, monkeypatch):
+@pytest.mark.parametrize('role,answers,source,destination', [
+    ('destination', ['n', '3', '1'], 'account-a/org-a', 'account-c/org-c'),
+    ('source', ['2', 'n', '2'], 'account-c/org-c', 'account-b/org-b'),
+])
+def test_wizard_watches_new_profile_folder_and_rescans_without_guessing(
+        store, run_cli, monkeypatch, role, answers, source, destination):
     record(store)
     def initialize_destination(_):
         (store.root / 'account-c/org-c').mkdir(parents=True)
     monkeypatch.setattr('acp.claude_profiles.time.sleep', initialize_destination)
-    code, out, err = run_cli('migrate', '--dry-run', answers=['n', '3', '1'])
+    code, out, err = run_cli('migrate', '--dry-run', answers=answers)
     assert code == 0, err
-    assert json.loads(out)['destination'] == 'account-c/org-c'
+    assert json.loads(out)['destination'] == destination
+    assert json.loads(out)['source'] == source
+    assert f'Sign in to the {role} account/org' in err
     assert 'Watching for a new profile' in err
     assert not store.backups.exists()
 
