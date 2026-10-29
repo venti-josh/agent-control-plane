@@ -10,7 +10,8 @@ that key. The available older handoff backups do not establish the unread list
 at the time of this switch. No unread state was restored or guessed.
 
 Inventory, dry-run and apply now report unread state as `not_migrated`, even when
-session-file hashes verify. The CLI displays this limitation before confirmation.
+session-file hashes verify. The CLI displays this limitation at entry, before
+profile selection can instruct the user to sign in to another account.
 Regression assertions extend the existing inventory/dry-run, apply/rollback and
 wizard-cancellation tests. Actual unread migration remains unsupported; a future
 implementation needs a pre-sign-out capture, scoped restore and restart validation.

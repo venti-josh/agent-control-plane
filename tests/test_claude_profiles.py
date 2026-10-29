@@ -39,6 +39,7 @@ def test_wizard_selects_by_number_previews_and_cancels_without_writes(store, run
     assert 'Recognizable source session' in err and '2023-11-14' in err
     assert 'Copy/update 1 sessions' in err and 'Source:' in err and 'Destination:' in err
     assert 'blue unread dots' in err
+    assert err.index('blue unread dots') < err.index('Choose destination')
     assert err.index('blue unread dots') < err.index('Type migrate')
     assert tree(store.root.parent.parent) == before
 
@@ -150,6 +151,7 @@ def test_wizard_watches_new_profile_folder_and_rescans_without_guessing(
     assert json.loads(out)['destination'] == destination
     assert json.loads(out)['source'] == source
     assert f'Sign in to the {role} account/org' in err
+    assert err.index('blue unread dots') < err.index(f'Sign in to the {role} account/org')
     assert 'Watching for a new profile' in err
     assert not store.backups.exists()
 

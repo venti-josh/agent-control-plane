@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .claude_migration import atomic_write
-from .claude_sessions import encode, object_json, safe_path
+from .claude_sessions import UNREAD_WARNING, encode, object_json, safe_path
 
 ALIAS = re.compile(r'[a-zA-Z][a-zA-Z0-9_-]{0,39}\Z')
 
@@ -158,7 +158,6 @@ class Profiles:
 
 def preview(report):
     say(f'\nSource:      {report["source"]}\nDestination: {report["destination"]}')
-    say(f'Warning: {report["unread_state"]["reason"]}')
     say(f'Copy/update {len(report["restored"])} sessions; '
         f'preserve {len(report["preserved_as_newer"])} newer sessions; '
         f'{len(report["already_present"])} already present; {len(report["changes"])} files to change.')
@@ -178,6 +177,8 @@ def migrate(profiles, destination=None, source=None, dry_run=False, yes=False):
         raise ValueError('Supply --from PROFILE --to PROFILE with --dry-run or --yes, or run the wizard in a terminal')
     pending_aliases = {}
     try:
+        # Profile selection can ask the user to switch accounts before planning.
+        say(f'Warning: {UNREAD_WARNING}')
         wizard = interactive and (not destination or not source)
         if wizard:
             say('Select the account/org that should RECEIVE the saved Code sessions first. '

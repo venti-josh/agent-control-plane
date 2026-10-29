@@ -74,7 +74,8 @@ read. The current command does not capture or restore unread state, and rerunnin
 it or rolling back a session migration will not restore lost markers. Preserving
 them requires capturing that separate state **before signing out**. Inventory,
 dry-run, and apply reports expose `unread_state.status = "not_migrated"`, and the
-terminal preview warns before confirmation. `disk_verified` only verifies the
+wizard warns before profile selection or instructions to switch accounts, and
+explicit migrations warn before planning. `disk_verified` only verifies the
 session files that ACP wrote, not unread markers.
 
 Run the interactive wizard from a host terminal:
